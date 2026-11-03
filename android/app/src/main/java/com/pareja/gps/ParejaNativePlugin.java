@@ -1,0 +1,251 @@
+package com.pareja.gps;
+
+import android.Manifest;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.PowerManager;
+import android.provider.Settings;
+
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
+import androidx.core.content.pm.PackageInfoCompat;
+
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+@CapacitorPlugin(
+    name = "ParejaNative",
+    permissions = {
+        @Permission(alias = "location", strings = { Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION }),
+        @Permission(alias = "background", strings = { Manifest.permission.ACCESS_BACKGROUND_LOCATION }),
+        @Permission(alias = "notifications", strings = { "android.permission.POST_NOTIFICATIONS" })
+    }
+)
+public class ParejaNativePlugin extends Plugin {
+
+    private boolean has(String perm) {
+        return ContextCompat.checkSelfPermission(getContext(), perm) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private JSObject buildStatus() {
+        Context c = getContext();
+        boolean fine = has(Manifest.permission.ACCESS_FINE_LOCATION);
+        JSObject r = new JSObject();
+        r.put("sdk", Build.VERSION.SDK_INT);
+        r.put("location", fine);
+        r.put("background", Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ? fine : has(Manifest.permission.ACCESS_BACKGROUND_LOCATION));
+        r.put("notifications", NotificationManagerCompat.from(c).areNotificationsEnabled());
+        PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+        r.put("battery", pm != null && pm.isIgnoringBatteryOptimizations(c.getPackageName()));
+        r.put("install", Build.VERSION.SDK_INT < Build.VERSION_CODES.O || c.getPackageManager().canRequestPackageInstalls());
+        return r;
+    }
+
+    private void launch(Intent i) {
+        try {
+            getActivity().startActivity(i);
+        } catch (Exception e) {
+            try {
+                Intent s = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getContext().getPackageName()));
+                getActivity().startActivity(s);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    // ---------- Estado ----------
+    @PluginMethod
+    public void status(PluginCall call) {
+        call.resolve(buildStatus());
+    }
+
+    @PluginMethod
+    public void appInfo(PluginCall call) {
+        try {
+            PackageInfo pi = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+            JSObject r = new JSObject();
+            r.put("versionName", pi.versionName == null ? "" : pi.versionName);
+            r.put("versionCode", PackageInfoCompat.getLongVersionCode(pi));
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject(String.valueOf(e.getMessage()));
+        }
+    }
+
+    // ---------- Permisos ----------
+    @PluginMethod
+    public void requestLocation(PluginCall call) {
+        if (has(Manifest.permission.ACCESS_FINE_LOCATION)) { call.resolve(buildStatus()); return; }
+        requestPermissionForAlias("location", call, "permCallback");
+    }
+
+    @PluginMethod
+    public void requestBackground(PluginCall call) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || has(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
+            call.resolve(buildStatus());
+            return;
+        }
+        if (!has(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            call.reject("Primero concede la ubicación precisa");
+            return;
+        }
+        requestPermissionForAlias("background", call, "permCallback");
+    }
+
+    @PluginMethod
+    public void requestNotifications(PluginCall call) {
+        if (NotificationManagerCompat.from(getContext()).areNotificationsEnabled()) { call.resolve(buildStatus()); return; }
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissionForAlias("notifications", call, "permCallback");
+        } else {
+            openNotificationSettings(call);
+        }
+    }
+
+    @PermissionCallback
+    private void permCallback(PluginCall call) {
+        call.resolve(buildStatus());
+    }
+
+    @PluginMethod
+    public void requestBattery(PluginCall call) {
+        Context c = getContext();
+        PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+        if (pm != null && pm.isIgnoringBatteryOptimizations(c.getPackageName())) { call.resolve(buildStatus()); return; }
+        try {
+            getActivity().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + c.getPackageName())));
+        } catch (Exception e) {
+            launch(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        }
+        call.resolve(buildStatus());
+    }
+
+    @PluginMethod
+    public void requestInstall(PluginCall call) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getContext().getPackageManager().canRequestPackageInstalls()) {
+            launch(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getContext().getPackageName())));
+        }
+        call.resolve(buildStatus());
+    }
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        launch(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getContext().getPackageName())));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void openNotificationSettings(PluginCall call) {
+        Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+        i.putExtra(Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());
+        launch(i);
+        call.resolve(buildStatus());
+    }
+
+    // ---------- Actualizaciones ----------
+    @PluginMethod
+    public void httpGet(final PluginCall call) {
+        final String u = call.getString("url");
+        if (u == null) { call.reject("Falta la dirección"); return; }
+        new Thread(() -> {
+            HttpURLConnection con = null;
+            try {
+                con = (HttpURLConnection) new URL(u).openConnection();
+                con.setConnectTimeout(10000);
+                con.setReadTimeout(10000);
+                con.setUseCaches(false);
+                con.setRequestProperty("Cache-Control", "no-cache");
+                if (con.getResponseCode() != 200) throw new Exception("HTTP " + con.getResponseCode());
+                InputStream in = con.getInputStream();
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close();
+                JSObject r = new JSObject();
+                r.put("text", out.toString("UTF-8"));
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject(String.valueOf(e.getMessage()));
+            } finally {
+                if (con != null) con.disconnect();
+            }
+        }).start();
+    }
+
+    @PluginMethod
+    public void downloadAndInstall(final PluginCall call) {
+        final String u = call.getString("url");
+        if (u == null) { call.reject("Falta la dirección"); return; }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getContext().getPackageManager().canRequestPackageInstalls()) {
+            call.reject("Falta permitir instalar desde esta app");
+            return;
+        }
+        new Thread(() -> {
+            HttpURLConnection con = null;
+            try {
+                File dir = new File(getContext().getCacheDir(), "update");
+                if (!dir.exists()) dir.mkdirs();
+                File apk = new File(dir, "app.apk");
+                if (apk.exists()) apk.delete();
+
+                con = (HttpURLConnection) new URL(u).openConnection();
+                con.setConnectTimeout(15000);
+                con.setReadTimeout(30000);
+                con.setUseCaches(false);
+                if (con.getResponseCode() != 200) throw new Exception("HTTP " + con.getResponseCode());
+                long total = con.getContentLengthLong();
+                InputStream in = con.getInputStream();
+                OutputStream out = new FileOutputStream(apk);
+                byte[] buf = new byte[16384];
+                int n;
+                long done = 0;
+                int last = -1;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                    done += n;
+                    if (total > 0) {
+                        int pct = (int) (done * 100 / total);
+                        if (pct != last) {
+                            last = pct;
+                            JSObject p = new JSObject();
+                            p.put("percent", pct);
+                            notifyListeners("updateProgress", p);
+                        }
+                    }
+                }
+                out.close();
+                in.close();
+                if (apk.length() < 100000) throw new Exception("El archivo descargado es muy pequeño");
+
+                Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", apk);
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(uri, "application/vnd.android.package-archive");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject(String.valueOf(e.getMessage()));
+            } finally {
+                if (con != null) con.disconnect();
+            }
+        }).start();
+    }
+}

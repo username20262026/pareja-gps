@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Nuestro Mapa 💞</title>
+</head>
+<body>
+  <div id="login" class="screen hidden">
+    <div class="card">
+      <div class="logo">💞</div>
+      <h1>Nuestro Mapa</h1>
+      <p class="sub">Entra con tu cuenta. En todos tus celulares serás la misma persona.</p>
+      <label>Correo</label>
+      <input id="lgEmail" type="email" autocomplete="email" placeholder="tucorreo@gmail.com" />
+      <label>Contraseña</label>
+      <input id="lgPass" type="password" autocomplete="current-password" placeholder="Mínimo 6 caracteres" />
+      <button id="btnLogin">Entrar 💕</button>
+      <button id="btnSignup" class="ghost">Crear cuenta nueva</button>
+      <button id="btnReset" class="link">¿Olvidaste tu contraseña?</button>
+      <p id="lgMsg" class="msg"></p>
+    </div>
+  </div>
+
+  <div id="setup" class="screen hidden">
+    <div class="card">
+      <div class="logo">💞</div>
+      <h1>Tu perfil</h1>
+      <p class="sub" id="setupSub">Solo se pide una vez por cuenta</p>
+      <label>Tu nombre</label>
+      <input id="inName" placeholder="Ej: Juan" />
+      <label>Elige tu emoji</label>
+      <div id="avatars" class="avatars"></div>
+      <label>Código de sala (el mismo para los dos)</label>
+      <input id="inRoom" placeholder="Ej: x7k2mi93fabc" />
+      <button id="btnGen" class="ghost">🎲 Generar código nuevo</button>
+      <label>Fecha de aniversario (opcional)</label>
+      <input type="date" id="inAnniv" />
+      <button id="btnSave">Guardar y entrar 💕</button>
+      <button id="btnSetupOut" class="link">Usar otra cuenta</button>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <header>
+      <div><b id="hdrName"></b><small id="hdrSub"></small></div>
+      <span id="status"></span>
+    </header>
+
+    <div id="mapWrap">
+      <div id="map"></div>
+      <div id="frame"></div>
+      <div id="banner" class="banner wait"></div>
+      <div class="fab">
+        <button id="btnLayer" title="Cambiar tipo de mapa">🛰️</button>
+        <button id="btnCenter" title="Ver a los dos">🎯</button>
+        <button id="btnHeart" title="Enviar un corazón">💗</button>
+      </div>
+      <div id="histPlayer" class="hplayer hidden">
+        <button id="hpPlay" aria-label="Reproducir o pausar">▶</button>
+        <input type="range" id="hpSeek" min="0" max="1000" value="0" aria-label="Avance del recorrido" />
+        <button id="hpSpeed" class="ghost" aria-label="Velocidad">×30</button>
+        <button id="hpFollow" class="ghost active" aria-label="Seguir al marcador">🎯</button>
+      </div>
+      <div id="toast" class="toast hidden"></div>
+      <div id="hearts"></div>
+    </div>
+
+    <section id="sheet">
+      <button id="handle" class="handle" aria-label="Mostrar u ocultar panel"></button>
+      <div class="tabs">
+        <div id="tab-us" class="tab">
+          <div id="usInfo"></div>
+          <h3>¿Cómo te sientes?</h3>
+          <div id="moods" class="chips"></div>
+          <div class="row">
+            <input id="inMsg" maxlength="80" placeholder="Un mensajito para mi amor 💌" />
+            <button id="btnMsg">Enviar</button>
+          </div>
+          <div class="row">
+            <button id="btnGo">🧭 Ir hacia mi amor</button>
+            <button id="btnHeart2" class="ghost">💗 Enviar corazón</button>
+          </div>
+        </div>
+
+        <div id="tab-places" class="tab hidden">
+          <h3>Nuestros lugares</h3>
+          <div class="row">
+            <select id="placeEmoji">
+              <option>🏠</option><option>💼</option><option>🍽️</option><option>❤️</option>
+              <option>⭐</option><option>🎬</option><option>🏖️</option><option>🛍️</option>
+            </select>
+            <button id="btnPlaceHere">📍 Guardar donde estoy</button>
+          </div>
+          <button id="btnPlaceMap" class="ghost">🗺️ Marcar tocando el mapa</button>
+          <div id="placesList"></div>
+        </div>
+
+        <div id="tab-hist" class="tab hidden">
+          <h3>Recorridos</h3>
+          <div class="row"><select id="histUser"></select><input type="date" id="histDate" /></div>
+          <div class="row"><button id="btnHist">Ver ruta</button><button id="btnHistClear" class="ghost">Quitar</button></div>
+          <div class="chips">
+            <button id="btnGuess" class="active">Tramos estimados</button>
+            <button id="btnDots">Puntos del GPS</button>
+          </div>
+          <div id="histInfo" class="muted"></div>
+        </div>
+
+        <div id="tab-set" class="tab hidden">
+          <h3>Tipo de mapa</h3>
+          <div class="chips" id="styleChips">
+            <button data-style="calle">🗺️ Calles</button>
+            <button data-style="satelite">🛰️ Satélite</button>
+            <button data-style="google">🌍 Google</button>
+            <button data-style="oscuro">🌙 Oscuro</button>
+          </div>
+          <h3>Marco del mapa</h3>
+          <div class="chips" id="frameChips">
+            <button data-frame="hearts">💗 Corazones</button>
+            <button data-frame="polaroid">📷 Polaroid</button>
+            <button data-frame="gold">✨ Dorado</button>
+            <button data-frame="none">Sin marco</button>
+          </div>
+          <h3>Google Maps</h3>
+          <p class="muted" id="gStatus"></p>
+          <div class="row"><input id="inGKey" autocomplete="off" placeholder="Pega tu clave de API de Google" /><button id="btnGKey">Guardar</button></div>
+          <h3>En el mapa</h3>
+          <button id="btnLine" class="ghost">📏 Línea de distancia: sí</button>
+          <h3>Ubicación</h3>
+          <button id="btnShare">⏸ Pausar compartir ubicación</button>
+          <h3>Aniversario</h3>
+          <div class="row"><input type="date" id="inAnniv2" /><button id="btnAnniv">Guardar</button></div>
+          <div id="nativeBox">
+            <h3>Permisos del celular</h3>
+            <button id="btnPerms">🔐 Revisar y conceder permisos</button>
+            <h3>Actualizaciones</h3>
+            <p class="muted" id="verInfo"></p>
+            <button id="btnUpd" class="ghost">🔄 Buscar actualización</button>
+          </div>
+          <h3>Cuenta</h3>
+          <p class="muted" id="accInfo"></p>
+          <div class="row"><button id="btnCopy" class="ghost">📋 Copiar código</button><button id="btnRoom" class="ghost">Cambiar sala</button></div>
+          <button id="btnLogout" class="danger">Cerrar sesión</button>
+        </div>
+      </div>
+      <nav id="nav">
+        <button data-tab="us" class="active"><span>💞</span>Nosotros</button>
+        <button data-tab="places"><span>📍</span>Lugares</button>
+        <button data-tab="hist"><span>🕒</span>Recorrido</button>
+        <button data-tab="set"><span>⚙️</span>Ajustes</button>
+      </nav>
+    </section>
+  </div>
+  <div id="permModal" class="modal hidden"><div class="modalcard">
+    <h2>🔐 Permisos para cuidarnos</h2>
+    <p class="muted">Pulsa "Conceder todo" y ve aceptando lo que Android te pida.</p>
+    <div id="permList"></div>
+    <button id="btnPermAll">✨ Conceder todo</button>
+    <button id="btnPermSettings" class="ghost">⚙️ Abrir ajustes de la app</button>
+    <button id="btnPermClose" class="link">Ahora no</button>
+  </div></div>
+  <div id="updModal" class="modal hidden"><div class="modalcard">
+    <h2>🔄 Actualización disponible</h2>
+    <p id="updInfo"></p>
+    <div class="bar"><div id="updBar"></div></div>
+    <p class="muted" id="updState"></p>
+    <button id="btnUpdNow">⬇️ Descargar e instalar</button>
+    <button id="btnUpdLater" class="link">Más tarde</button>
+  </div></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

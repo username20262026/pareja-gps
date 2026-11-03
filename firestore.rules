@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Perfil de cada cuenta (nombre, emoji, sala): solo su dueño
+    match /profiles/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Cada persona solo escribe en su propio lugar; todos los de la sala pueden leer
+    match /rooms/{room}/users/{uid}/{document=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /rooms/{room}/places/{id} {
+      allow read, write: if request.auth != null;
+    }
+    match /rooms/{room}/meta/{id} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
