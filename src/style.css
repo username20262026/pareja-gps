@@ -213,3 +213,7 @@ nav button.active{color:var(--rose);font-weight:700}
 #banner{position:static!important;transform:none!important;top:auto!important;left:auto!important;right:auto!important;bottom:auto!important;width:auto!important;margin:8px 12px 0!important;border-radius:16px!important;box-shadow:0 4px 14px #f43f5e26!important}
 .fab{top:10px!important;right:10px!important}
 .fab button{width:38px!important;height:38px!important;font-size:1.1rem!important}
+
+/* La hoja mantiene su tamaño y su fondo en todas las pestañas */
+#sheet{background:var(--pattern),var(--card)!important}
+.tabs{min-height:36vh}

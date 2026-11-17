@@ -199,9 +199,17 @@ const STYLES = {
   oscuro: () => L.layerGroup([L.tileLayer(OSM, { maxZoom: 19, className: 'dark-tiles', attribution: '© OpenStreetMap' })])
 };
 // Mapbox: satélite con calles (mapbox.com, clave pública "pk.")
-const mapboxLayer = () => L.layerGroup([L.tileLayer(
-  `https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/{z}/{x}/{y}@2x?access_token=${encodeURIComponent(mKey)}`,
-  { tileSize: 512, zoomOffset: -1, maxZoom: 21, attribution: '© Mapbox © OpenStreetMap' })]);
+const mapboxLayer = () => {
+  let fallos = 0;
+  const tl = L.tileLayer(
+    `https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/{z}/{x}/{y}@2x?access_token=${encodeURIComponent(mKey)}`,
+    { tileSize: 512, zoomOffset: -1, maxZoom: 21, attribution: '© Mapbox © OpenStreetMap' });
+  // Si Mapbox no entrega las imágenes (clave sin permiso o restringida), vuelve a calles sin dejar el mapa en gris
+  tl.on('tileerror', () => {
+    if (++fallos === 3) { toast('Mapbox no carga: revisa la clave. Usando calles.'); setStyle('calle'); }
+  });
+  return L.layerGroup([tl]);
+};
 // Google Maps (satélite actual) por la API oficial Map Tiles
 async function googleLayer() {
   const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(gKey)}`, {
