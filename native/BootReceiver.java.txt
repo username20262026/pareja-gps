@@ -1,0 +1,16 @@
+package __PKG__;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+
+/** Reinicia el envio de ubicacion al encender el celular o al actualizar la app. */
+public class BootReceiver extends BroadcastReceiver {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        String a = intent == null ? null : intent.getAction();
+        if (Intent.ACTION_BOOT_COMPLETED.equals(a) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) {
+            TrackService.startIfEnabled(context);
+        }
+    }
+}

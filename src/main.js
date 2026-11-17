@@ -1,3 +1,4 @@
+import { onSnapshot as fsOnSnapshot, addDoc as fsAddDoc, collection as fsCollection } from 'firebase/firestore';
 import './style.css';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -7,7 +8,7 @@ import {
   sendPasswordResetEmail, signOut
 } from 'firebase/auth';
 import {
-  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, getDocs
+  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs
 } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
 
@@ -31,7 +32,8 @@ let sharing = localStorage.getItem('sharing') !== 'off';
 let styleName = localStorage.getItem('mapStyle') || 'calle';
 let showLine = localStorage.getItem('showLine') !== 'off';
 let map, baseLayer, histLayer, placesLayer, pairLine, pairLabel;
-let gKey = localStorage.getItem('gkey') || '', gSession = '', gAttr = '', gAttrT, curStyle = '', styleSeq = 0;
+let wStyle = (() => { try { return { theme: 0, frame: 0, map: true, label: '', ...JSON.parse(localStorage.getItem('wstyle') || '{}') }; } catch { return { theme: 0, frame: 0, map: true, label: '' }; } })();
+let mKey = localStorage.getItem('mkey') || '', gKey = localStorage.getItem('gkey') || '', gSession = '', gAttr = '', gAttrT, curStyle = '', styleSeq = 0;
 let frameName = localStorage.getItem('mapFrame') || 'hearts';
 let watcherId = null, webWatchId = null, flushing = false, trackStarting = false, histRun = 0, lastKept = null, histData = null;
 const histOpts = { guess: true, dots: false };
@@ -175,9 +177,9 @@ async function startApp() {
   $('inAnniv2').value = anniv;
   initMap(); initUI();
   if (cfg.anniv) setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: cfg.anniv }, { merge: true }).catch(() => {});
-  listenPeople(); listenPlaces(); listenMeta();
+  listenPeople(); listenPlaces(); listenMeta(); listenChat();
   lastKept = queue[queue.length - 1] || null;
-  maybeStartTracking(); initNative();
+  maybeStartTracking(); initNative(); startCallWatcher();
   window.addEventListener('online', flush);
   setInterval(flush, 30000);
   setInterval(() => { renderUs(); renderPlaces(); }, 30000);
@@ -196,6 +198,10 @@ const STYLES = {
   ]),
   oscuro: () => L.layerGroup([L.tileLayer(OSM, { maxZoom: 19, className: 'dark-tiles', attribution: '© OpenStreetMap' })])
 };
+// Mapbox: satélite con calles (mapbox.com, clave pública "pk.")
+const mapboxLayer = () => L.layerGroup([L.tileLayer(
+  `https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/{z}/{x}/{y}@2x?access_token=${encodeURIComponent(mKey)}`,
+  { tileSize: 512, zoomOffset: -1, maxZoom: 21, attribution: '© Mapbox © OpenStreetMap' })]);
 // Google Maps (satélite actual) por la API oficial Map Tiles
 async function googleLayer() {
   const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(gKey)}`, {
@@ -234,14 +240,17 @@ async function setStyle(name) {
       catch (e) { console.error(e); toast('Google Maps no respondió. Revisa la clave. Muestro el satélite normal.'); shown = 'satelite'; }
     }
   }
+  if (name === 'mapbox') {
+    if (!mKey) { toast('Pon tu clave de Mapbox en Ajustes'); shown = 'satelite'; } else layer = mapboxLayer();
+  }
   if (seq !== styleSeq) return;
   if (!layer) layer = STYLES[shown]();
   if (baseLayer) map.removeLayer(baseLayer);
   baseLayer = layer.addTo(map);
   curStyle = shown; styleName = name; localStorage.setItem('mapStyle', name);
-  $('btnLayer').textContent = { calle: '🗺️', satelite: '🛰️', google: '🌍', oscuro: '🌙' }[shown];
+  $('btnLayer').textContent = { calle: '🗺️', satelite: '🛰️', google: '🌍', mapbox: '🌐', oscuro: '🌙' }[shown];
   document.querySelectorAll('#styleChips button').forEach((b) => b.classList.toggle('active', b.dataset.style === shown));
-  if (shown === 'google') refreshGAttr(); else setAttr('');
+  if (shown === 'google') refreshGAttr(); else setAttr(shown === 'mapbox' ? '© Mapbox © OpenStreetMap' : '');
 }
 
 // Marcos del mapa
@@ -258,7 +267,7 @@ function initMap() {
   map = L.map('map', { zoomControl: false }).setView([0, 0], 2);
   L.control.zoom({ position: 'bottomleft' }).addTo(map);
   placesLayer = L.layerGroup().addTo(map);
-  setStyle(styleName === 'google' || STYLES[styleName] ? styleName : 'calle');
+  setStyle(styleName === 'google' || styleName === 'mapbox' || STYLES[styleName] ? styleName : 'calle');
   setFrame(frameName);
   map.on('moveend', () => { if (curStyle === 'google') { clearTimeout(gAttrT); gAttrT = setTimeout(refreshGAttr, 700); } });
   map.on('click', (e) => {
@@ -310,11 +319,31 @@ function initUI() {
       document.querySelectorAll('#nav button').forEach((x) => x.classList.toggle('active', x === b));
       document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== `tab-${b.dataset.tab}`));
       $('sheet').classList.remove('collapsed'); setTimeout(() => map.invalidateSize(), 250);
+      $('sheet').classList.toggle('chatmode', b.dataset.tab === 'chat');
+      if (b.dataset.tab === 'chat') { renderChat(true); markSeen(); }
     };
   });
+  $('btnChat').onclick = sendChat;
+  buildEmojis();
+  $('btnEmoji').onclick = () => togglePanel();
+  buildStickers();
+  $('replyX').onclick = () => setReply(null);
+  $('btnCall').onclick = startCall;
+  $('callAccept').onclick = acceptCall;
+  $('callHangup').onclick = hangupCall;
+  $('menuDel').onclick = deleteMine;
+  $('lbClose').onclick = closeLightbox;
+  $('lightbox').onclick = (e) => { if (e.target.id === 'lightbox') closeLightbox(); };
+  $('menuClose').onclick = closeMsgMenu;
+  $('msgMenu').onclick = (e) => { if (e.target.id === 'msgMenu') closeMsgMenu(); };
+  $('btnRec').onclick = toggleRec;
+  $('recCancel').onclick = cancelRec;
+  $('btnFile').onclick = async () => { const ok = fileClaveCache || await getFileClave(); if (ok) $('filePick').click(); };
+  $('filePick').onchange = () => { const f = $('filePick').files[0]; $('filePick').value = ''; if (f) uploadFile(f); };
+  $('inChat').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } };
   $('handle').onclick = () => { $('sheet').classList.toggle('collapsed'); setTimeout(() => map.invalidateSize(), 250); };
   $('btnLayer').onclick = () => {
-    const order = gKey ? ['calle', 'satelite', 'google', 'oscuro'] : ['calle', 'satelite', 'oscuro'];
+    const order = ['calle', 'satelite'].concat(gKey ? ['google'] : [], mKey ? ['mapbox'] : [], ['oscuro']);
     setStyle(order[(order.indexOf(curStyle) + 1) % order.length]);
   };
   document.querySelectorAll('#styleChips button').forEach((b) => { b.onclick = () => setStyle(b.dataset.style); });
@@ -328,6 +357,17 @@ function initUI() {
     gKey = k; localStorage.setItem('gkey', k); $('inGKey').value = '';
     setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { gkey: k }, { merge: true }).catch(() => {});
     gStatus(); setStyle('google');
+  };
+  const mStatus = () => { $('mStatus').textContent = mKey ? '✅ Clave guardada. Mapa Mapbox y ajuste de rutas activos; tu pareja la recibe sola.' : 'Sin clave: las rutas se ajustan con el servicio gratuito.'; };
+  mStatus(); window.refreshMStatus = mStatus;
+  $('btnMKey').onclick = async () => {
+    const k = $('inMKey').value.trim();
+    if (!k) return toast('Pega primero tu clave');
+    if (!/^pk\.[\w-]+\.[\w-]+$/.test(k)) return toast('Esa clave no parece válida (empieza con pk.)');
+    mKey = k; localStorage.setItem('mkey', k); $('inMKey').value = '';
+    if (IS_NATIVE) Native.setMapboxKey({ key: k }).catch(() => {});
+    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { mkey: k }, { merge: true }).catch(() => {});
+    mStatus(); setStyle('mapbox');
   };
   $('btnCenter').onclick = fitAll;
 
@@ -401,10 +441,11 @@ function initUI() {
 
 // ---------- Rastreo ----------
 async function startTracking() {
-  if (watcherId || webWatchId != null || trackStarting) return;
+  if (watcherId || webWatchId != null || trackStarting || nativeTrack) return;
   trackStarting = true;
   try {
   if (Capacitor.isNativePlatform()) {
+    if (await startNativeTrack()) return; // servicio propio: sigue con la app cerrada y al reiniciar
     watcherId = await BG.addWatcher(
       {
         backgroundTitle: 'Ubicación compartida 💕',
@@ -428,7 +469,38 @@ async function startTracking() {
   }
   } finally { trackStarting = false; }
 }
+// Servicio nativo (TrackService): comparte la ubicacion aunque la app este cerrada o se reinicie el celular
+let nativeTrack = false, uiPollTimer = 0, lastUiTs = 0;
+async function startNativeTrack() {
+  try {
+    const u = auth.currentUser;
+    if (!u || !u.refreshToken) return false;
+    await Native.startTracking({
+      apiKey: auth.app.options.apiKey, projectId: auth.app.options.projectId,
+      room: cfg.room, uid: cfg.uid, name: cfg.name || '', avatar: cfg.avatar || '', refreshToken: u.refreshToken
+    });
+    nativeTrack = true;
+    if (mKey) Native.setMapboxKey({ key: mKey }).catch(() => {});
+    clearInterval(uiPollTimer);
+    uiPollTimer = setInterval(pollNative, 2000); pollNative();
+    return true;
+  } catch { return false; } // si el celular aun no tiene el modulo nuevo, usa el metodo de antes
+}
+async function pollNative() {
+  if (document.visibilityState === 'hidden') return;
+  try {
+    const l = await Native.lastLocation();
+    if (l && l.time && l.time !== lastUiTs) { lastUiTs = l.time; uiPoint(l); }
+  } catch { /* nada */ }
+}
+function uiPoint(p) { // solo dibuja: el servicio nativo es quien guarda y sube los puntos
+  const pt = { lat: p.latitude, lng: p.longitude, acc: Math.round(p.accuracy || 0), ts: p.time || Date.now() };
+  drawPerson(cfg.uid, { name: cfg.name, avatar: cfg.avatar, ...pt }, true);
+  if (!centered) { centered = true; map.setView([pt.lat, pt.lng], 16); }
+  renderUs();
+}
 async function stopTracking() {
+  if (nativeTrack) { try { await Native.stopTracking(); } catch {} nativeTrack = false; clearInterval(uiPollTimer); }
   if (watcherId) { try { await BG.removeWatcher({ id: watcherId }); } catch {} watcherId = null; }
   if (webWatchId != null) { navigator.geolocation.clearWatch(webWatchId); webWatchId = null; }
 }
@@ -442,7 +514,6 @@ function updateShareBtn() {
   $('btnShare').textContent = sharing ? '⏸ Pausar compartir ubicación' : '▶ Reanudar compartir ubicación';
   $('btnShare').className = sharing ? '' : 'ghost';
 }
-
 
 // ---------- Permisos y actualizaciones (solo en el celular) ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -512,16 +583,28 @@ async function checkUpdate(manual) {
   try {
     const info = await Native.appInfo();
     $('verInfo').textContent = `Versión instalada: ${info.versionName} (${info.versionCode})`;
-    const res = await withTimeout(Native.httpGet({ url: `${UPDATE_BASE}/version.json?t=${Date.now()}` }), 15000);
-    const v = JSON.parse(res.text);
-    if (Number(v.versionCode) > Number(info.versionCode)) {
-      pendingUpdate = v;
-      $('updInfo').innerHTML = `Versión nueva <b>${esc(v.versionName)}</b> (tienes ${esc(info.versionName)}).${v.notes ? `<br><i>${esc(v.notes)}</i>` : ''}`;
+    
+    const res = await withTimeout(Native.httpGet({ url: `https://api.github.com/repos/username20262026/pareja-gps/releases/latest?t=${Date.now()}` }), 15000);
+    const datos = JSON.parse(res.text);
+    
+    // El tag viene como "v1.10". Rompemos por el punto y sacamos el "10"
+    const versionNubeCode = parseInt(datos.tag_name.split('.')[1]);
+    
+    if (versionNubeCode > parseInt(info.versionCode)) {
+      pendingUpdate = { 
+        url: datos.assets[0].browser_download_url, 
+        versionName: datos.tag_name, 
+        notes: datos.body || '' 
+      };
+      $('updInfo').innerHTML = `Versión nueva <b>${esc(pendingUpdate.versionName)}</b> (tienes ${esc(info.versionName)}).${pendingUpdate.notes ? `<br><i>${esc(pendingUpdate.notes)}</i>` : ''}`;
       $('updBar').style.width = '0%'; $('updState').textContent = '';
       $('updModal').classList.remove('hidden');
     } else if (manual) toast('Ya tienes la última versión 💖');
-  } catch (e) { if (manual) toast('No pude buscar actualizaciones. ¿Ya publicaste una versión?'); }
+  } catch (e) { 
+    if (manual) toast('No pude conectar con GitHub para buscar actualizaciones.'); 
+  }
 }
+
 async function doUpdate() {
   if (!pendingUpdate) return;
   $('btnUpdNow').disabled = true;
@@ -544,8 +627,28 @@ async function initNative() {
   Native.addListener('updateProgress', (d) => {
     $('updBar').style.width = d.percent + '%'; $('updState').textContent = `Descargando… ${d.percent}%`;
   });
+  Native.addListener('updateTap', () => checkUpdate(false)); // tocó la notificación de versión nueva
   $('btnPerms').onclick = openPerms; $('btnPermAll').onclick = grantAll; $('btnPermClose').onclick = closePerms;
   $('btnPermSettings').onclick = () => Native.openAppSettings();
+  const wSave = () => {
+    localStorage.setItem('wstyle', JSON.stringify(wStyle));
+    document.querySelectorAll('#wThemeChips button').forEach((b) => b.classList.toggle('active', +b.dataset.t === wStyle.theme));
+    document.querySelectorAll('#wFrameChips button').forEach((b) => b.classList.toggle('active', +b.dataset.f === wStyle.frame));
+    $('btnWMap').classList.toggle('active', wStyle.map);
+    if (IS_NATIVE) Native.setWidgetStyle(wStyle).catch(() => {});
+  };
+  document.querySelectorAll('#wThemeChips button').forEach((b) => { b.onclick = () => { wStyle.theme = +b.dataset.t; wSave(); }; });
+  document.querySelectorAll('#wFrameChips button').forEach((b) => { b.onclick = () => { wStyle.frame = +b.dataset.f; wSave(); }; });
+  $('btnWMap').onclick = () => { wStyle.map = !wStyle.map; wSave(); };
+  $('inWLabel').value = wStyle.label;
+  $('btnWLabel').onclick = () => { wStyle.label = $('inWLabel').value.trim().slice(0, 24); wSave(); toast('Mensaje guardado'); };
+  wSave();
+  $('btnWidget').onclick = async () => {
+    let ok = false;
+    try { ok = (await Native.pinWidget()).supported; } catch {}
+    if (!ok) toast('Mantén presionada la pantalla de inicio → Widgets → Pareja GPS');
+  };
+  $('btnAuto').onclick = async () => { try { await Native.openAutostart(); } catch {} toast('Activa "Inicio automático" o "Permitir en segundo plano" para Pareja GPS'); };
   $('btnUpd').onclick = () => checkUpdate(true);
   $('btnUpdNow').onclick = doUpdate; $('btnUpdLater').onclick = () => $('updModal').classList.add('hidden');
   document.addEventListener('visibilitychange', () => {
@@ -600,6 +703,18 @@ function listenPeople() {
       const data = d.data();
       if (data.uid !== d.id) return; // ignora registros viejos de dispositivos sueltos
       drawPerson(d.id, data, d.id === cfg.uid);
+      if (d.id !== cfg.uid) {
+        attachChatPartner(d.id);
+        const react = (key, ts, text) => {
+          const k = key + d.id;
+          if (ts > Number(localStorage.getItem(k) || 0)) {
+            localStorage.setItem(k, ts);
+            if (Date.now() - ts < 6 * 3600e3) { toast(text); navigator.vibrate?.(60); }
+          }
+        };
+        if (data.moodTs && data.mood) react('seenMood_', data.moodTs, `${data.avatar || '💗'} ${data.name}: ${data.mood}`);
+        if (data.msgTs && data.msg) react('seenMsg_', data.msgTs, `💌 ${data.name}: “${data.msg}”`);
+      }
       if (d.id !== cfg.uid && data.heartTs) {
         const k = 'seenHeart_' + d.id;
         if (data.heartTs > Number(localStorage.getItem(k) || 0)) {
@@ -612,6 +727,539 @@ function listenPeople() {
     if (firstFit && Object.keys(markers).length > 1) { fitAll(); firstFit = false; }
   }, (e) => console.error('users', e));
 }
+// ---------- Chat ----------
+// Cada persona guarda sus mensajes en su propio lugar (rooms/.../users/<uid>/chat) y marca como "visto"
+// los de la otra en users/<uid>/reads. Así funciona con las reglas de Firebase que ya tienes.
+const chat = { mine: [], theirs: {}, seen: {}, myReads: new Set(), readsReady: false, partners: new Set(), first: {} };
+const chatCol = (uid, sub) => collection(db, 'rooms', cfg.room, 'users', uid, sub);
+const chatOpen = () => !$('tab-chat').classList.contains('hidden') && !$('sheet').classList.contains('collapsed') && document.visibilityState === 'visible';
+
+function listenChat() {
+  onSnapshot(query(chatCol(cfg.uid, 'chat'), orderBy('ts', 'desc'), limit(150)), (snap) => {
+    chat.mine = snap.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data() }));
+    renderChat();
+  }, (e) => console.error('chat', e));
+  onSnapshot(query(chatCol(cfg.uid, 'reads'), orderBy('at', 'desc'), limit(300)), (snap) => {
+    chat.myReads = new Set(snap.docs.map((d) => d.id)); chat.readsReady = true; renderChat();
+  }, (e) => console.error('reads', e));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markSeen(); });
+}
+function attachChatPartner(pid) {
+  if (chat.partners.has(pid)) return;
+  chat.partners.add(pid);
+  onSnapshot(query(chatCol(pid, 'chat'), orderBy('ts', 'desc'), limit(150)), (snap) => {
+    chat.theirs[pid] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const fresh = chat.first[pid] ? snap.docChanges().filter((c) => c.type === 'added').map((c) => c.doc.data()) : [];
+    chat.first[pid] = true;
+    renderChat();
+    if (fresh.length && !chatOpen()) {
+      const m = fresh[fresh.length - 1];
+      toast(`💬 ${m.name || 'Tu amor'}: ${String(m.text).slice(0, 60)}`); navigator.vibrate?.(60);
+    }
+  }, (e) => console.error('chat pareja', e));
+  onSnapshot(query(chatCol(pid, 'reads'), orderBy('at', 'desc'), limit(300)), (snap) => {
+    snap.docs.forEach((d) => { chat.seen[d.id] = d.data().at; });
+    renderChat();
+  }, (e) => console.error('reads pareja', e));
+}
+function sendChat() {
+  const text = $('inChat').value.trim(); if (!text) return;
+  sendMsg({ text: text.slice(0, 500) });
+  $('inChat').value = '';
+}
+
+// ---- Chat: respuestas deslizando y emojis ----
+const EMOJIS = '😀 😍 🥰 😘 😂 🤣 😊 😉 😎 🤗 🤔 😴 😭 😡 🥺 😅 🙈 💕 💖 💗 💘 💞 💌 💋 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🔥 ✨ 🌹 🌸 🌈 ⭐ 🎉 🎶 🍕 🍫 ☕ 🌙 ☀️ 👍 👏 🙏 💪 🫶 😇 🥳 😋 🤤 👀 💯'.split(' ');
+let replyTo = null;
+let recorder = null, recChunks = [], recTimer = null, recStart = 0, recCancel = false;
+
+function sendMsg(extra) {
+  const ts = Date.now();
+  const data = { uid: cfg.uid, name: cfg.name || '', avatar: cfg.avatar || '', text: '', ts, ...extra };
+  data.text = String(data.text || '').slice(0, 500);
+  if (replyTo) data.replyTo = replyTo;
+  setDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'chat', `${ts}${Math.random().toString(36).slice(2, 6)}`), data)
+    .catch(() => toast('No se pudo enviar el mensaje'));
+  if (replyTo) setReply(null);
+}
+function setReply(m) {
+  replyTo = m ? { uid: m.uid, name: m.name || 'Tu amor', text: String(m.text || '').slice(0, 120) } : null;
+  $('replyBar').classList.toggle('hidden', !replyTo);
+  if (replyTo) { $('replyTxt').textContent = `↩ ${replyTo.uid === cfg.uid ? 'Tú' : replyTo.name}: ${replyTo.text}`; $('inChat').focus(); }
+}
+function addSwipe(el, m) {
+  let x0 = 0, y0 = 0, dx = 0, drag = false;
+  el.addEventListener('touchstart', (e) => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; drag = true; el.style.transition = 'none'; }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (!drag) return;
+    const t = e.touches[0], ddx = t.clientX - x0, ddy = t.clientY - y0;
+    if (Math.abs(ddy) > Math.abs(ddx)) return;
+    dx = Math.max(0, Math.min(ddx, 80));
+    el.style.transform = `translateX(${dx}px)`;
+  }, { passive: true });
+  const end = () => {
+    if (!drag) return;
+    drag = false; el.style.transition = 'transform .2s'; el.style.transform = '';
+    if (dx >= 55) { setReply(m); navigator.vibrate?.(30); }
+  };
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchcancel', end);
+}
+function buildEmojis() {
+  $('emojiGrid').innerHTML = EMOJIS.map((e) => `<button type="button" data-e="${e}">${e}</button>`).join('');
+  $('emojiGrid').onclick = (ev) => {
+    const e = ev.target.dataset.e; if (!e) return;
+    const inp = $('inChat'), p = inp.selectionStart ?? inp.value.length, q = inp.selectionEnd ?? p;
+    inp.value = inp.value.slice(0, p) + e + inp.value.slice(q);
+    inp.focus();
+  };
+}
+let recNativeOn = false, recNativeTimer = null;
+async function toggleRecNative() {
+  if (recNativeOn) {
+    clearInterval(recNativeTimer); recNativeOn = false;
+    $('recBar').classList.add('hidden'); $('btnRec').classList.remove('rec');
+    try {
+      const r = await Native.stopRec();
+      if (r && r.data) sendMsg({ type: 'audio', data: r.data, dur: r.dur, text: '🎤 Audio' });
+    } catch (e) { toast(e.message || 'No se pudo enviar el audio'); }
+    return;
+  }
+  try { await Native.startRec(); }
+  catch (e) { return toast(e.message || 'Permite el micrófono en los ajustes de la app'); }
+  recNativeOn = true;
+  recStart = Date.now();
+  $('btnRec').classList.add('rec'); $('recBar').classList.remove('hidden');
+  const tick = () => {
+    const s = Math.floor((Date.now() - recStart) / 1000);
+    $('recTime').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    if (s >= 60 && recNativeOn) toggleRecNative();
+  };
+  tick(); recNativeTimer = setInterval(tick, 500);
+}
+async function toggleRec() {
+  if (IS_NATIVE) return toggleRecNative();
+  if (recorder) { recorder.stop(); return; }
+  if (IS_NATIVE) { try { await Native.requestMic(); } catch {} }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('Tu navegador no puede grabar audio');
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return toast('Permite el micrófono para grabar 🎤'); }
+  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((x) => MediaRecorder.isTypeSupported(x)) || '';
+  const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 24000 });
+  recorder = rec; recChunks = []; recCancel = false;
+  rec.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+  rec.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    clearInterval(recTimer); $('recBar').classList.add('hidden'); $('btnRec').classList.remove('rec');
+    const type = rec.mimeType || 'audio/webm';
+    const dur = Math.round((Date.now() - recStart) / 1000);
+    recorder = null;
+    if (recCancel) return;
+    const blob = new Blob(recChunks, { type });
+    if (blob.size < 1000) return toast('Audio muy corto');
+    if (blob.size > 900 * 1024) return toast('Audio muy largo, graba algo más corto');
+    const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+    sendMsg({ type: 'audio', data, dur, text: '🎤 Audio' });
+  };
+  recStart = Date.now();
+  rec.start();
+  $('btnRec').classList.add('rec'); $('recBar').classList.remove('hidden');
+  const tick = () => {
+    const s = Math.floor((Date.now() - recStart) / 1000);
+    $('recTime').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    if (s >= 60 && recorder) recorder.stop();
+  };
+  tick(); recTimer = setInterval(tick, 500);
+}
+function cancelRec() {
+  if (IS_NATIVE && recNativeOn) {
+    clearInterval(recNativeTimer); recNativeOn = false;
+    $('recBar').classList.add('hidden'); $('btnRec').classList.remove('rec');
+    Native.cancelRec().catch(() => {});
+    return;
+  }
+  if (!recorder) return; recCancel = true; recorder.stop();
+}
+// ---- Archivos y fotos (servidor propio de la pareja) ----
+const MAX_FILE = 100 * 1024 * 1024;
+const mediaCache = new Map(), mediaPending = new Map(), mediaFailed = new Map();
+const FILE_BASE = 'https://pareja-mia.duckdns.org';
+let fileClaveCache = null;
+// La clave vive en la sala de Firebase (rooms/<sala>/meta/server): la escribes una vez y la leen los dos celulares.
+async function getFileClave(forceAsk) {
+  if (!forceAsk && fileClaveCache) return fileClaveCache;
+  if (!forceAsk) {
+    try {
+      const s = await getDoc(doc(db, 'rooms', cfg.room, 'meta', 'server'));
+      if (s.exists() && s.data().clave) { fileClaveCache = s.data().clave; return fileClaveCache; }
+    } catch {}
+  }
+  const c = (prompt('Clave del servidor de archivos (se guardará para los dos celulares):') || '').trim();
+  if (!c) return null;
+  await setDoc(doc(db, 'rooms', cfg.room, 'meta', 'server'), { clave: c });
+  fileClaveCache = c;
+  return c;
+}
+async function srvFetch(path, opts = {}) {
+  let clave = await getFileClave();
+  if (!clave) throw new Error('Sin clave');
+  const send = () => fetch(FILE_BASE + path, { ...opts, headers: { ...(opts.headers || {}), 'x-clave': clave } });
+  let r = await send();
+  if (r.status === 401) {
+    // clave incorrecta o cambiada: se pide de nuevo una vez
+    fileClaveCache = null;
+    clave = await getFileClave(true);
+    if (!clave) throw new Error('Clave incorrecta');
+    r = await send();
+  }
+  if (r.status === 401) throw new Error('Clave incorrecta');
+  if (r.status === 429) throw new Error('Demasiados intentos, espera 15 min');
+  if (!r.ok) throw new Error('Error ' + r.status);
+  return r;
+}
+async function uploadFile(f) {
+  if (!(await getFileClave())) return;
+  if (f.size > MAX_FILE) return toast('Máximo 100 MB');
+  toast('Subiendo…');
+  try {
+    const type = f.type || 'application/octet-stream';
+    const r = await srvFetch('/upload', { method: 'POST', headers: { 'x-filename': encodeURIComponent(f.name), 'content-type': type }, body: f });
+    const j = await r.json();
+    const isImg = type.startsWith('image/');
+    sendMsg({ type: isImg ? 'image' : 'file', fid: j.id, fname: f.name, text: isImg ? '📷 Foto' : `📎 ${f.name}` });
+  } catch (e) {
+    toast('No se pudo subir: ' + e.message + (e.message === 'Failed to fetch' ? ' (¿laptop encendida?)' : ''));
+  }
+}
+function loadBlob(fid) {
+  if (mediaCache.has(fid)) return Promise.resolve(mediaCache.get(fid));
+  if (mediaPending.has(fid)) return mediaPending.get(fid);
+  const failedAt = mediaFailed.get(fid);
+  if (failedAt && Date.now() - failedAt < 60000) return Promise.reject(new Error('reciente'));
+  const p = srvFetch(`/f/${fid}`).then((r) => r.blob()).then((bl) => {
+    const u = URL.createObjectURL(bl); mediaCache.set(fid, u); mediaPending.delete(fid); return u;
+  }).catch((e) => { mediaPending.delete(fid); mediaFailed.set(fid, Date.now()); throw e; });
+  mediaPending.set(fid, p);
+  return p;
+}
+// Visor de fotos dentro de la app (no abre otra aplicación)
+function openLightbox(u) {
+  $('lbImg').src = u;
+  $('lightbox').classList.remove('hidden');
+}
+function closeLightbox() {
+  $('lightbox').classList.add('hidden');
+  $('lbImg').src = '';
+}
+// Llamado por el botón atrás nativo: cierra lo abierto y devuelve true; si no hay nada, devuelve false
+window.__handleBack = () => {
+  if (!$('lightbox').classList.contains('hidden')) { closeLightbox(); return true; }
+  if (!$('msgMenu').classList.contains('hidden')) { closeMsgMenu(); return true; }
+  return false;
+};
+function mediaBubble(b, m) {
+  if (m.type === 'image') {
+    const im = document.createElement('img'); im.className = 'mimg'; im.alt = 'Foto';
+    loadBlob(m.fid).then((u) => { im.src = u; im.onclick = () => openLightbox(u); })
+      .catch(() => { const s = document.createElement('small'); s.textContent = '📷 Foto no disponible (¿laptop encendida?)'; im.replaceWith(s); });
+    b.appendChild(im);
+  } else {
+    const a = document.createElement('a'); a.className = 'fl'; a.href = '#';
+    a.textContent = '📎 ' + (m.fname || 'archivo');
+    a.onclick = (e) => {
+      e.preventDefault();
+      loadBlob(m.fid).then((u) => { const d = document.createElement('a'); d.href = u; d.download = m.fname || 'archivo'; d.click(); })
+        .catch(() => toast('No se pudo abrir (¿laptop encendida?)'));
+    };
+    b.appendChild(a);
+  }
+}
+// Mantener presionado (0.5 s) para abrir el menú; si el dedo se mueve, no se abre
+function addLongPress(el, fn) {
+  let t = null, x0 = 0, y0 = 0;
+  const cancel = () => { clearTimeout(t); t = null; };
+  el.addEventListener('touchstart', (e) => {
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+    cancel();
+    t = setTimeout(() => { t = null; navigator.vibrate?.(40); fn(); }, 500);
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    const d = e.touches[0];
+    if (Math.abs(d.clientX - x0) > 10 || Math.abs(d.clientY - y0) > 10) cancel();
+  }, { passive: true });
+  el.addEventListener('touchend', cancel);
+  el.addEventListener('touchcancel', cancel);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+let menuMsg = null;
+function openMsgMenu(m) {
+  menuMsg = m;
+  $('menuTxt').textContent = String(m.text || '').slice(0, 80);
+  $('menuDel').textContent = m.pending ? '✖ Cancelar envío' : '🗑 Eliminar para todos';
+  $('msgMenu').classList.remove('hidden');
+}
+function closeMsgMenu() { $('msgMenu').classList.add('hidden'); menuMsg = null; }
+async function deleteMine() {
+  const m = menuMsg; closeMsgMenu();
+  if (!m) return;
+  try {
+    if (m.fid) { try { await srvFetch(`/f/${m.fid}`, { method: 'DELETE' }); } catch {} }
+    await deleteDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'chat', m.id));
+    toast(m.pending ? 'Envío cancelado' : 'Mensaje eliminado para todos');
+  } catch (e) {
+    toast('No se pudo eliminar el mensaje');
+  }
+}
+// ---- Llamadas de voz: señalización por Firestore + audio WebRTC nativo ----
+let callActive = false, callRole = null, callId = null, callIncomingId = null;
+let callWatcherOn = false, callAnswerApplied = false, callUnsubs = [];
+const callRef = () => doc(db, 'rooms', cfg.room, 'call', 'current');
+const callCandCol = () => fsCollection(db, 'rooms', cfg.room, 'call', 'current', 'cand');
+function showCall(title, status, incoming) {
+  $('callTitle').textContent = title;
+  $('callStatus').textContent = status;
+  $('callAccept').classList.toggle('hidden', !incoming);
+  $('callOverlay').classList.remove('hidden');
+}
+function endCallLocal() {
+  callUnsubs.forEach((f) => f()); callUnsubs = [];
+  callActive = false; callRole = null; callId = null; callIncomingId = null; callAnswerApplied = false;
+  Native.callEnd().catch(() => {});
+  $('callOverlay').classList.add('hidden');
+}
+function listenCandidates() {
+  callUnsubs.push(fsOnSnapshot(callCandCol(), (snap) => {
+    snap.docChanges().forEach((ch) => {
+      if (ch.type !== 'added') return;
+      const c = ch.doc.data();
+      if (callId && c.callId === callId && c.from !== cfg.uid) Native.callAddIce(c).catch(() => {});
+    });
+  }));
+}
+async function startCall() {
+  if (callActive || callIncomingId) return toast('Ya hay una llamada en curso');
+  callId = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+  callRole = 'caller'; callActive = true;
+  try {
+    await setDoc(callRef(), { callId, caller: cfg.uid, status: 'ringing', ts: Date.now() });
+    await Native.callStartCall({ caller: true });
+  } catch (e) {
+    toast(e.message || 'No se pudo llamar');
+    setDoc(callRef(), { status: 'ended', callId }, { merge: true }).catch(() => {});
+    endCallLocal();
+    return;
+  }
+  listenCandidates();
+  showCall('Llamando…', 'Esperando que conteste', false);
+}
+async function acceptCall() {
+  const id = callIncomingId;
+  if (!id) return;
+  const snap = await getDoc(callRef()).catch(() => null);
+  const d = snap && snap.data();
+  if (!d || d.callId !== id || !d.offer) return toast('La llamada ya no está disponible');
+  callId = id; callIncomingId = null; callRole = 'callee'; callActive = true;
+  try {
+    await Native.callStartCall({ caller: false });
+    listenCandidates();
+    await Native.callSetRemote({ type: 'offer', sdp: d.offer.sdp });
+    await setDoc(callRef(), { status: 'active' }, { merge: true });
+  } catch (e) {
+    toast(e.message || 'No se pudo contestar');
+    endCallLocal();
+    return;
+  }
+  showCall('En llamada', 'Conectando…', false);
+}
+async function hangupCall() {
+  const id = callId || callIncomingId;
+  endCallLocal();
+  if (id) setDoc(callRef(), { status: 'ended', callId: id }, { merge: true }).catch(() => {});
+}
+function startCallWatcher() {
+  if (callWatcherOn) return;
+  callWatcherOn = true;
+  // Señales nativas hacia Firestore
+  Native.addListener('callLocalSdp', (o) => {
+    if (!callId) return;
+    setDoc(callRef(), { [o.type]: { type: o.type, sdp: o.sdp } }, { merge: true })
+      .catch(() => toast('Error al enviar la llamada'));
+  });
+  Native.addListener('callIce', (c) => {
+    if (!callId) return;
+    fsAddDoc(callCandCol(), { callId, from: cfg.uid, candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex })
+      .catch(() => {});
+  });
+  Native.addListener('callState', (s) => {
+    if (!callActive) return;
+    if (s.state === 'ERROR') { toast('Error en la llamada'); hangupCall(); }
+    else if (s.state === 'CONNECTED' || s.state === 'COMPLETED') $('callStatus').textContent = 'En llamada 🎙️';
+    else if (s.state === 'FAILED') { toast('La llamada no pudo conectar'); hangupCall(); }
+  });
+  // Escucha la llamada de la sala: entrante, respuesta o fin
+  fsOnSnapshot(callRef(), (snap) => {
+    const d = snap.data();
+    if (!d) return;
+    const fresh = Date.now() - (d.ts || 0) < 60000;
+    if (d.status === 'ringing' && d.caller !== cfg.uid && !callActive && !callIncomingId && fresh) {
+      callIncomingId = d.callId;
+      showCall('Te está llamando tu pareja', 'Llamada de voz', true);
+      navigator.vibrate?.([300, 200, 300]);
+      return;
+    }
+    if (callActive && callRole === 'caller' && d.callId === callId && d.answer && !callAnswerApplied) {
+      callAnswerApplied = true;
+      $('callStatus').textContent = 'Conectando…';
+      Native.callSetRemote({ type: 'answer', sdp: d.answer.sdp }).catch(() => {});
+    }
+    if (d.status === 'ended' && (callActive || callIncomingId) && d.callId === (callId || callIncomingId)) endCallLocal();
+  }, () => {});
+}
+// ---- Stickers propios (dibujos incluidos en la app) y GIFs de Giphy ----
+// Para tus propios GIFs: pega aquí tu clave de Giphy (developers.giphy.com). Sin clave, la pestaña GIF avisa.
+const GIPHY_KEY = 'KpvgBKCWbvgFax0EsuNtNROyc4jLVcGs';
+const sv = (body) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${body}</svg>`;
+const STICKER_CAT = {
+  corazon: sv('<path d="M50 88C15 62 8 42 18 28C28 14 46 16 50 30C54 16 72 14 82 28C92 42 85 62 50 88Z" fill="#f43f5e"/>'),
+  osito: sv('<circle cx="22" cy="22" r="13" fill="#b45309"/><circle cx="78" cy="22" r="13" fill="#b45309"/><circle cx="50" cy="55" r="36" fill="#b45309"/><circle cx="38" cy="50" r="5" fill="#111"/><circle cx="62" cy="50" r="5" fill="#111"/><ellipse cx="50" cy="66" rx="9" ry="6" fill="#fde7c8"/>'),
+  gato: sv('<path d="M20 90V40L38 14L50 34L62 14L80 40V90Z" fill="#f59e0b"/><circle cx="38" cy="58" r="5" fill="#111"/><circle cx="62" cy="58" r="5" fill="#111"/><path d="M46 70Q50 74 54 70" stroke="#111" stroke-width="3" fill="none"/>'),
+  beso: sv('<circle cx="50" cy="50" r="40" fill="#fde047"/><circle cx="36" cy="42" r="5" fill="#111"/><path d="M60 40L70 46L60 52" stroke="#111" stroke-width="4" fill="none"/><path d="M42 66Q50 72 58 66" stroke="#111" stroke-width="3" fill="none"/><path d="M78 20L84 30L74 30Z" fill="#f43f5e"/>'),
+  estrella: sv('<path d="M50 6L62 36L94 38L68 58L78 90L50 72L22 90L32 58L6 38L38 36Z" fill="#facc15"/>'),
+  flor: sv('<circle cx="50" cy="28" r="18" fill="#f9a8d4"/><circle cx="72" cy="46" r="18" fill="#f9a8d4"/><circle cx="62" cy="72" r="18" fill="#f9a8d4"/><circle cx="38" cy="72" r="18" fill="#f9a8d4"/><circle cx="28" cy="46" r="18" fill="#f9a8d4"/><circle cx="50" cy="50" r="12" fill="#fde047"/>'),
+  luna: sv('<path d="M60 10A40 40 0 1 0 90 70A32 32 0 1 1 60 10Z" fill="#818cf8"/>'),
+  fuego: sv('<path d="M50 6C60 28 80 40 78 64C76 84 62 94 50 94C36 94 22 84 22 64C22 48 34 40 40 26C46 36 46 46 50 52C54 40 52 22 50 6Z" fill="#f97316"/>'),
+};
+const stickerUrl = (sid) => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(STICKER_CAT[sid] || '');
+function buildStickers() {
+  $('stickerGrid').innerHTML = Object.keys(STICKER_CAT).map((sid) => `<button type="button" data-sid="${sid}"><img src="${stickerUrl(sid)}" alt="${sid}"></button>`).join('');
+  $('stickerGrid').onclick = (ev) => {
+    const b = ev.target.closest('[data-sid]'); if (!b) return;
+    sendMsg({ type: 'sticker', sid: b.dataset.sid, text: '🧸 Sticker' });
+    togglePanel(false);
+  };
+  $('gifGrid').onclick = (ev) => {
+    const b = ev.target.closest('[data-gif]'); if (!b) return;
+    sendMsg({ type: 'gif', url: b.dataset.gif, text: '🎞️ GIF' });
+    togglePanel(false);
+  };
+  $('gifGo').onclick = searchGifs;
+  $('gifQ').onkeydown = (e) => { if (e.key === 'Enter') searchGifs(); };
+  document.querySelectorAll('[data-pt]').forEach((b) => {
+    b.onclick = () => {
+      document.querySelectorAll('[data-pt]').forEach((x) => x.classList.toggle('active', x === b));
+      $('emojiGrid').classList.toggle('hidden', b.dataset.pt !== 'emoji');
+      $('stickerGrid').classList.toggle('hidden', b.dataset.pt !== 'sticker');
+      $('gifBox').classList.toggle('hidden', b.dataset.pt !== 'gif');
+    };
+  });
+}
+async function searchGifs() {
+  const q = $('gifQ').value.trim();
+  if (!GIPHY_KEY) { $('gifNote').textContent = 'Falta la clave de Giphy en la app.'; return; }
+  if (!q) return;
+  $('gifNote').textContent = 'Buscando…';
+  try {
+    const r = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(GIPHY_KEY)}&q=${encodeURIComponent(q)}&limit=18&rating=pg`);
+    const list = ((await r.json()).data) || [];
+    $('gifNote').textContent = list.length ? '' : 'Sin resultados';
+    $('gifGrid').innerHTML = list.map((g) => {
+      const u = g.images.fixed_height_small.url;
+      return `<button type="button" data-gif="${u}"><img src="${u}" loading="lazy" alt="GIF"></button>`;
+    }).join('');
+  } catch (e) {
+    $('gifNote').textContent = 'No se pudo buscar. Revisa la conexión.';
+  }
+}
+function togglePanel(force) {
+  const p = $('chatPanel');
+  const show = force ?? p.classList.contains('hidden');
+  p.classList.toggle('hidden', !show);
+  placePanel();
+}
+// Coloca el panel de emojis/stickers justo encima de la barra de escribir, completo, como el teclado
+function placePanel() {
+  const p = $('chatPanel'), bar = document.querySelector('.chatbar');
+  if (!p || !bar) return;
+  if (p.parentElement !== document.body) document.body.appendChild(p); // fuera de la zona con desplazamiento
+  if (p.classList.contains('hidden')) return;
+  const r = bar.getBoundingClientRect();
+  p.style.position = 'fixed';
+  p.style.left = r.left + 'px';
+  p.style.width = r.width + 'px';
+  p.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+  p.style.maxHeight = Math.max(160, Math.min(window.innerHeight * 0.5, r.top - 90)) + 'px';
+  p.style.overflowY = 'auto';
+  p.style.zIndex = '65';
+}
+window.addEventListener('resize', placePanel);
+  $('panelClose').onclick = () => togglePanel(false);
+function markSeen() {
+  if (!chat.readsReady || !chatOpen()) return;
+  const unread = Object.values(chat.theirs).flat().filter((m) => !chat.myReads.has(m.id));
+  if (!unread.length) return;
+  const wb = writeBatch(db), at = Date.now();
+  unread.slice(0, 400).forEach((m) => wb.set(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'reads', m.id), { at }));
+  wb.commit().catch(() => {});
+  unread.forEach((m) => chat.myReads.add(m.id));
+}
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+const hm = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const whenLbl = (ts) => (sameDay(ts, Date.now()) ? hm(ts) : `${new Date(ts).toLocaleDateString([], { day: 'numeric', month: 'short' })} ${hm(ts)}`);
+const dayLbl = (ts) => {
+  if (sameDay(ts, Date.now())) return 'Hoy';
+  if (sameDay(ts, Date.now() - 86400000)) return 'Ayer';
+  return new Date(ts).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+};
+function renderChat(forceBottom) {
+  const list = $('chatList'); if (!list) return;
+  const msgs = chat.mine.concat(...Object.values(chat.theirs)).sort((a, b) => a.ts - b.ts);
+  const stick = forceBottom || list.scrollHeight - list.scrollTop - list.clientHeight < 90;
+  list.innerHTML = '';
+  if (!msgs.length) { const e = document.createElement('p'); e.className = 'muted'; e.textContent = 'Aún no hay mensajes. ¡Escribe el primero! 💌'; list.appendChild(e); }
+  let day = null;
+  msgs.forEach((m) => {
+    if (day == null || !sameDay(day, m.ts)) {
+      day = m.ts; const s = document.createElement('div'); s.className = 'day'; s.textContent = dayLbl(m.ts); list.appendChild(s);
+    }
+    const mine = m.uid === cfg.uid;
+    const b = document.createElement('div'); b.className = `bub ${mine ? 'me' : 'them'}`;
+    if (m.type === 'sticker' || m.type === 'gif') b.classList.add('stkbub');
+    if (m.replyTo) {
+      const q = document.createElement('div'); q.className = 'quote';
+      const who = m.replyTo.uid === cfg.uid ? 'Tú' : m.replyTo.name;
+      q.innerHTML = `<b>${esc(who)}</b>${esc(String(m.replyTo.text || '').slice(0, 120))}`;
+      b.appendChild(q);
+    }
+    if (m.type === 'audio' && m.data) {
+      const a = document.createElement('audio'); a.controls = true; a.preload = 'metadata'; a.src = m.data; b.appendChild(a);
+    } else if (m.type === 'sticker' && STICKER_CAT[m.sid]) {
+      const im = document.createElement('img'); im.className = 'stkimg'; im.alt = 'Sticker'; im.src = stickerUrl(m.sid); b.appendChild(im);
+    } else if (m.type === 'gif' && m.url) {
+      const im = document.createElement('img'); im.className = 'gifimg'; im.alt = 'GIF'; im.loading = 'lazy'; im.src = m.url; b.appendChild(im);
+    } else if ((m.type === 'image' || m.type === 'file') && m.fid) {
+      mediaBubble(b, m);
+    } else {
+      const t = document.createElement('span'); t.textContent = m.text; b.appendChild(t);
+    }
+    const sm = document.createElement('small');
+    if (mine) {
+      const at = chat.seen[m.id];
+      sm.textContent = m.pending ? `${hm(m.ts)} · 🕓 enviando` : at ? `${hm(m.ts)} · ✓✓ Visto ${whenLbl(at)}` : `${hm(m.ts)} · ✓ Enviado`;
+      if (at) sm.className = 'seen';
+    } else sm.textContent = hm(m.ts);
+    b.appendChild(sm); list.appendChild(b);
+    addSwipe(b, m);
+    if (mine) addLongPress(b, () => openMsgMenu(m));
+  });
+  if (stick) list.scrollTop = list.scrollHeight;
+  const unread = chat.readsReady ? Object.values(chat.theirs).flat().filter((m) => !chat.myReads.has(m.id)).length : 0;
+  const badge = $('chatBadge');
+  badge.textContent = unread > 9 ? '9+' : String(unread);
+  badge.classList.toggle('hidden', !unread || chatOpen());
+  markSeen();
+}
+
 function listenMeta() {
   onSnapshot(doc(db, 'rooms', cfg.room, 'meta', 'couple'), (s) => {
     if (s.exists() && s.data().anniv) { anniv = s.data().anniv; $('inAnniv2').value = anniv; }
@@ -619,6 +1267,12 @@ function listenMeta() {
     if (g && g !== gKey) {
       gKey = g; localStorage.setItem('gkey', g); window.refreshGStatus?.();
       if (styleName === 'google') setStyle('google');
+    }
+    const m = s.exists() ? s.data().mkey : '';
+    if (m && m !== mKey) {
+      mKey = m; localStorage.setItem('mkey', m); window.refreshMStatus?.();
+      if (IS_NATIVE) Native.setMapboxKey({ key: m }).catch(() => {});
+      if (styleName === 'mapbox') setStyle('mapbox');
     }
     renderUs();
   }, () => {});
@@ -735,15 +1389,49 @@ async function osrm(mode, service, pts, params) {
   const path = pts.map((c) => `${c.lng.toFixed(6)},${c.lat.toFixed(6)}`).join(';');
   return getJSON(`${OSRM}/routed-${mode}/${service}/v1/driving/${path}?${params}`);
 }
+const DRIFT_MAX_MS = 45; // más de ~160 km/h entre dos puntos = salto falso del GPS
 function cleanPoints(pts) {
-  const out = [];
+  const out = []; let jumps = 0;
   for (const p of pts.slice().sort((a, b) => a.ts - b.ts)) {
     if ((p.acc || 0) > 150) continue;
     const l = out[out.length - 1];
-    if (l && dist(l, p) < 4) continue;
+    if (l) {
+      const d = dist(l, p), dt = Math.max(1, (p.ts - l.ts) / 1000);
+      if (d < 4) continue;
+      if (d > 80 && d / dt > DRIFT_MAX_MS && ++jumps < 4) continue; // filtro de deriva
+    }
+    jumps = 0;
     out.push(p);
   }
-  return out;
+  // picos: el GPS salta lejos y vuelve casi al mismo sitio
+  const res = [];
+  for (let i = 0; i < out.length; i++) {
+    const a = res[res.length - 1], b = out[i], c = out[i + 1];
+    if (a && c) {
+      const ab = dist(a, b), bc = dist(b, c), ac = dist(a, c);
+      if (ab > 100 && bc > 100 && ac < Math.min(ab, bc) * 0.5) continue;
+    }
+    res.push(b);
+  }
+  return res;
+}
+// Paradas: varios minutos en el mismo sitio (la "P" del mapa). route = puntos sin el ruido de estar quieto
+const STOP_MIN_MS = 180000, STOP_RADIUS_M = 40;
+function findStops(pts) {
+  const stops = [], route = [];
+  let i = 0;
+  while (i < pts.length) {
+    let j = i;
+    while (j + 1 < pts.length && dist(pts[i], pts[j + 1]) <= STOP_RADIUS_M) j++;
+    if (j > i && pts[j].ts - pts[i].ts >= STOP_MIN_MS) {
+      let la = 0, ln = 0;
+      for (let k = i; k <= j; k++) { la += pts[k].lat; ln += pts[k].lng; }
+      stops.push({ lat: la / (j - i + 1), lng: ln / (j - i + 1), from: pts[i].ts, to: pts[j].ts });
+      route.push(pts[i], pts[j]);
+      i = j + 1;
+    } else { route.push(pts[i]); i++; }
+  }
+  return { stops, route };
 }
 function splitRuns(pts) {
   const runs = []; let cur = [];
@@ -776,6 +1464,15 @@ function pathLen(c) {
   for (let i = 1; i < c.length; i++) s += mDist(c[i - 1], c[i]);
   return s;
 }
+// Mapbox Map Matching (hasta 100 puntos por pedido). Devuelve trozos [lat,lng] o null.
+async function mapboxMatch(pts, mode) {
+  const coords = pts.map((p) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+  const rad = pts.map((p) => Math.min(50, radius(p))).join(';');
+  const url = `https://api.mapbox.com/matching/v5/mapbox/${mode === 'car' ? 'driving' : 'walking'}/${coords}` +
+    `?access_token=${encodeURIComponent(mKey)}&geometries=geojson&overview=full&radiuses=${rad}`;
+  const j = await getJSON(url);
+  return j.code === 'Ok' && j.matchings?.length ? j.matchings.map((m) => toLL(m.geometry)) : null;
+}
 const toLL = (g) => g.coordinates.map(([lng, lat]) => [lat, lng]);
 const asPt = (c) => ({ lat: c[0], lng: c[1] });
 // Ruta por las calles pasando por todos los puntos (plan B cuando el ajuste directo falla)
@@ -790,6 +1487,7 @@ async function snapRoute(pts, { segment, progress, cancelled }) {
   const total = chunks.reduce((a, c) => a + c.length, 0) + Math.max(0, runs.length - 1);
   let done = 0, calls = 0;
   const MAX_CALLS = 220; // para no abusar del servicio público
+  const DENSE_MAX_GAP_M = 40; // con puntos así de juntos, los puntos reales ya siguen la calle
   const raw = (arr) => arr.map((p) => [p.lat, p.lng]);
   const attempt = async (fn) => {
     if (calls >= MAX_CALLS) return null;
@@ -801,8 +1499,12 @@ async function snapRoute(pts, { segment, progress, cancelled }) {
     const mode = runMode(runs[i]);
     for (const ch of chunks[i]) {
       if (cancelled()) return;
+      if (ch.every((p, k) => k === 0 || dist(ch[k - 1], p) <= DENSE_MAX_GAP_M)) { // puntos juntos: sin servicio
+        segment(raw(ch), false, false); progress(++done, total); continue;
+      }
       // 1) ajuste a las calles (map matching)
       const segs = await attempt(async () => {
+        if (mKey) { try { const m = await mapboxMatch(ch, mode); if (m) return m; } catch { /* sigue con el gratuito */ } }
         const j = await osrm(mode, 'match', ch, `overview=full&geometries=geojson&radiuses=${ch.map(radius).join(';')}`);
         return j.code === 'Ok' && j.matchings?.length ? j.matchings.map((m) => toLL(m.geometry)) : null;
       });
@@ -827,9 +1529,11 @@ async function snapRoute(pts, { segment, progress, cancelled }) {
     if (i < runs.length - 1) { // hueco entre dos tramos: se rellena siguiendo las calles
       if (cancelled()) return;
       const a = runs[i][runs[i].length - 1], b = runs[i + 1][0];
-      let coords = null;
-      if (dist(a, b) > 25) coords = await attempt(() => routeVia([a, b], speedMode(dist(a, b), b.ts - a.ts)));
-      segment(coords || raw([a, b]), true, !coords);
+      if (dist(a, b) <= 60) segment(raw([a, b]), false, false); // misma parada
+      else {
+        const coords = await attempt(() => routeVia([a, b], speedMode(dist(a, b), b.ts - a.ts)));
+        segment(coords || raw([a, b]), true, !coords);
+      }
       progress(++done, total);
     }
   }
@@ -838,7 +1542,7 @@ function findGaps(pts) {
   const out = [];
   for (let i = 1; i < pts.length; i++) {
     const dt = pts[i].ts - pts[i - 1].ts;
-    if (dt > 180000 || dist(pts[i - 1], pts[i]) > 500) out.push(Math.round(dt / 60000));
+    if ((dt > 180000 && dist(pts[i - 1], pts[i]) > 100) || dist(pts[i - 1], pts[i]) > 500) out.push(Math.round(dt / 60000));
   }
   return out;
 }
@@ -873,8 +1577,9 @@ function buildPlayback(clean, segs) {
     let gap = false;
     if (k > 0) {
       const prev = clean[k - 1], dt = Math.max(1, p.ts - prev.ts);
-      gap = dt > GAP_MS || dist(prev, p) > 500;
-      vt += gap ? GAP_PLAY_MS : dt;
+      const dd = dist(prev, p);
+      gap = (dt > GAP_MS && dd > 100) || dd > 500;
+      vt += dt > GAP_MS ? GAP_PLAY_MS : dt;
     }
     anchors.push({ d: cum[j], ts: p.ts, vt, gap });
   });
@@ -920,6 +1625,12 @@ const hhmm = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minu
 const hhmmss = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const dayShort = (ts) => new Date(ts).toLocaleDateString([], { day: 'numeric', month: 'short' });
 const flagIcon = (e) => L.divIcon({ className: '', html: `<div class="pl">${e}</div>`, iconSize: [28, 28], iconAnchor: [8, 26] });
+const durTxt = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+const parkIcon = () => L.divIcon({ className: '', html: '<div class="pk">P</div>', iconSize: [24, 24], iconAnchor: [12, 12] });
+function histStops(layer, stops) {
+  stops.forEach((s) => L.marker([s.lat, s.lng], { icon: parkIcon(), zIndexOffset: 150 })
+    .bindTooltip(`Parada ${hhmm(s.from)} – ${hhmm(s.to)} · ${durTxt(s.to - s.from)}`).addTo(layer));
+}
 function histMarks(layer, clean) {
   const f = clean[0], l = clean[clean.length - 1];
   L.marker([f.lat, f.lng], { icon: flagIcon('🚩'), zIndexOffset: 200 }).bindTooltip(`Inicio ${hhmm(f.ts)}`).addTo(layer);
@@ -990,7 +1701,8 @@ function initPlayer() {
   $('hpPlay').onclick = () => { if (play.pb) setPlaying(!play.playing); };
   $('hpSeek').oninput = () => {
     if (!play.pb) return;
-    play.touched = true; play.vt = $('hpSeek').value / 1000 * play.pb.totalVt;
+    play.touched = true;
+    play.vt = $('hpSeek').value / 1000 * play.pb.totalVt;
     play.last = performance.now(); renderPlay(true);
   };
   $('hpSpeed').onclick = () => {
@@ -1012,6 +1724,7 @@ function paintHist() {
   play.done = L.polyline([], DONE_STYLE).addTo(histLayer);
   if (histOpts.dots) histData.clean.forEach((p) =>
     L.circleMarker([p.lat, p.lng], { radius: 3, color: '#be123c', weight: 1, fillColor: '#fff', fillOpacity: 1 }).bindTooltip(hhmm(p.ts)).addTo(histLayer));
+  histStops(histLayer, histData.stops);
   histMarks(histLayer, histData.clean);
   if (play.pb) {
     const who = people[histData.id] || {};
@@ -1023,10 +1736,11 @@ function paintHist() {
 }
 
 // ---- Caché del recorrido ya ajustado (para no volver a pedirlo) ----
-const HCACHE = 'hist:';
+const HCACHE = 'hist2:';
 function cacheGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
 function cachePut(key, segs) {
   try {
+    Object.keys(localStorage).filter((k) => k.startsWith('hist:')).forEach((k) => localStorage.removeItem(k)); // versión anterior
     const keys = Object.keys(localStorage).filter((k) => k.startsWith(HCACHE) && k !== key);
     keys.slice(0, Math.max(0, keys.length - 7)).forEach((k) => localStorage.removeItem(k));
     const r = (c) => c.map(([a, b]) => [+a.toFixed(5), +b.toFixed(5)]);
@@ -1055,7 +1769,8 @@ async function showHistory() {
   const clean = cleanPoints(pts);
   if (clean.length < 2) { histData = null; $('histInfo').textContent = pts.length ? 'Muy pocos puntos ese día.' : 'Sin puntos ese día.'; return; }
 
-  const data = { id, clean, segs: [] }; histData = data;
+  const { stops, route } = findStops(clean);
+  const data = { id, clean, route, stops, segs: [] }; histData = data;
   histLayer = L.layerGroup().addTo(map);
   const raw = clean.map((p) => [p.lat, p.lng]);
   const rough = L.polyline(raw, { color: '#d9a3b3', weight: 2, opacity: 0.5, dashArray: '2 6' }).addTo(histLayer);
@@ -1063,7 +1778,7 @@ async function showHistory() {
   map.fitBounds(rough.getBounds(), { padding: [40, 40] });
 
   let total = 0, failed = 0; const all = [];
-  const key = `${HCACHE}${id}:${day}:${clean.length}:${clean[clean.length - 1].ts}`;
+  const key = `${HCACHE}${mKey ? 'm' : 'o'}:${id}:${day}:${clean.length}:${clean[clean.length - 1].ts}`;
   const cached = cacheGet(key);
   const take = (coords, inferred) => {
     data.segs.push({ c: coords, inf: inferred });
@@ -1073,7 +1788,7 @@ async function showHistory() {
   };
   if (cached && cached.length) cached.forEach(({ c, inf }) => take(c, inf));
   else {
-    await snapRoute(clean, {
+    await snapRoute(route, {
       cancelled,
       progress: (a, b) => { if (!cancelled()) $('histInfo').textContent = `Ajustando a las calles… ${a}/${b}`; },
       segment: (coords, inferred, fail) => { if (cancelled()) return; if (fail) failed++; take(coords, inferred); }
@@ -1081,16 +1796,17 @@ async function showHistory() {
     if (cancelled()) return;
     if (!failed) cachePut(key, data.segs);
   }
-  play.pb = buildPlayback(clean, data.segs);
+  play.pb = buildPlayback(route, data.segs);
   play.vt = 0; play.touched = false;
   paintHist();
   if (play.pb) $('histPlayer').classList.remove('hidden');
   if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [40, 40] });
   const gaps = findGaps(clean);
   $('histInfo').innerHTML = `${clean.length} puntos del GPS · recorrido ≈ ${fmtDist(total)}` +
+    (stops.length ? ` · ${stops.length} parada(s)` : '') +
     (gaps.length ? `<br>⚠️ ${gaps.length} hueco(s) sin datos (el mayor de ${Math.max(...gaps)} min). Ahí el GPS no reportó.` : '') +
     (failed ? `<br>⚠️ ${failed} tramo(s) no se pudieron ajustar a las calles (servicio ocupado). Vuelve a tocar «Ver ruta».` : '') +
-    `<br>🌸 recorrido por las calles · ⚪ estimado (faltan datos)` +
+    `<br>🌸 recorrido · 🅿️ paradas · ⚪ estimado (faltan datos)` +
     (play.pb ? `<br>▶ Usa el reproductor del mapa para verlo en movimiento.` : '');
 }
 

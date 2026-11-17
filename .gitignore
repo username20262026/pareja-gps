@@ -1,1 +1,10 @@
-﻿node_modules/
+﻿dist/
+android/build/
+android/app/build/
+android/.gradle/
+android/.idea/
+node_modules/
+*.keystore
+*.jks
+*.apk
+clave.json

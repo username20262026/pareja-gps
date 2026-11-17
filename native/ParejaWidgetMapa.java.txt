@@ -1,0 +1,8 @@
+package __PKG__;
+
+public class ParejaWidgetMapa extends ParejaWidget {
+    @Override
+    int kind() {
+        return 1;
+    }
+}

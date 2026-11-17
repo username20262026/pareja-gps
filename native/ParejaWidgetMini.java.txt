@@ -1,0 +1,8 @@
+package __PKG__;
+
+public class ParejaWidgetMini extends ParejaWidget {
+    @Override
+    int kind() {
+        return 3;
+    }
+}
