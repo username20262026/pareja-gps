@@ -416,6 +416,14 @@ public class ParejaNativePlugin extends Plugin {
         call.resolve();
     }
 
+    // Avisos de llegada/salida de los Lugares (los revisa TrackService con la app cerrada)
+    @PluginMethod
+    public void setPlaceAlerts(PluginCall call) {
+        getContext().getSharedPreferences(TrackService.PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean("plAlerts", call.getBoolean("on", true)).apply();
+        call.resolve();
+    }
+
     // Mientras la pantalla esta abierta la app avisa sola; en segundo plano avisa el servicio
     @Override
     protected void handleOnResume() {
