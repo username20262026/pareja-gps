@@ -2,22 +2,52 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Perfil de cada cuenta (nombre, emoji, sala): solo su dueño
-    match /profiles/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+    function signedIn() { return request.auth != null; }
+    // Solo las (máximo) dos cuentas guardadas en rooms/<sala>.members pueden entrar a la sala
+    function isMember(room) {
+      return signedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/rooms/$(room)).data.members;
     }
 
-    // Cada persona solo escribe en su propio lugar; todos los de la sala pueden leer
+    // Perfil de cada cuenta (nombre, emoji, sala): solo su dueño
+    match /profiles/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // La sala: lista de miembros. La crea la primera cuenta, la segunda se suma y nadie más.
+    match /rooms/{room} {
+      allow read: if signedIn() && request.auth.uid in resource.data.members;
+      allow create: if signedIn() && request.resource.data.keys().hasOnly(['members'])
+        && request.resource.data.members == [request.auth.uid];
+      allow update: if signedIn() && request.resource.data.keys().hasOnly(['members']) && (
+        // ya es miembro y no cambia nada (volver a entrar)
+        (request.auth.uid in resource.data.members
+          && request.resource.data.members == resource.data.members)
+        // se suma como segunda persona
+        || (!(request.auth.uid in resource.data.members)
+          && resource.data.members.size() < 2
+          && request.resource.data.members == resource.data.members.concat([request.auth.uid]))
+        // sale de la sala ("Cambiar sala")
+        || (request.auth.uid in resource.data.members
+          && request.resource.data.members == resource.data.members.removeAll([request.auth.uid]))
+      );
+    }
+
+    // Cada persona solo escribe en su propio lugar; los dos de la sala pueden leer
     match /rooms/{room}/users/{uid}/{document=**} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isMember(room);
+      allow write: if isMember(room) && request.auth.uid == uid;
     }
 
     match /rooms/{room}/places/{id} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isMember(room);
     }
     match /rooms/{room}/meta/{id} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isMember(room);
+    }
+    // Llamadas de voz: señal (call/current) y candidatos ICE (call/current/cand/*)
+    match /rooms/{room}/call/{document=**} {
+      allow read, write: if isMember(room);
     }
   }
 }
