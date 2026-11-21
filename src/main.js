@@ -37,6 +37,7 @@ let mKey = localStorage.getItem('mkey') || '', gKey = localStorage.getItem('gkey
 let frameName = localStorage.getItem('mapFrame') || 'hearts';
 let watcherId = null, webWatchId = null, flushing = false, trackStarting = false, histRun = 0, lastKept = null, histData = null;
 const histOpts = { guess: true, dots: false };
+let placeAlerts = localStorage.getItem('placeAlerts') !== 'off';
 let addingPlace = false, anniv = '', places = [], firstFit = true, centered = false, wasTogether = false;
 const markers = {}, people = {};
 
@@ -411,6 +412,15 @@ function initUI() {
     toast('Toca en el mapa el lugar que quieres guardar');
   };
 
+  const alertsBtn = () => { $('btnPlaceAlerts').textContent = `🔔 Avisarme cuando llegue o salga de un lugar: ${placeAlerts ? 'sí' : 'no'}`; };
+  $('btnPlaceAlerts').onclick = () => {
+    placeAlerts = !placeAlerts; localStorage.setItem('placeAlerts', placeAlerts ? 'on' : 'off'); alertsBtn();
+    if (IS_NATIVE) Native.setPlaceAlerts({ on: placeAlerts }).catch(() => {});
+  };
+  alertsBtn();
+  if (IS_NATIVE) Native.setPlaceAlerts({ on: placeAlerts }).catch(() => {}); // si el APK es viejo, no pasa nada
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkPlaceAlerts(true); });
+
   $('histDate').valueAsDate = new Date();
   $('btnHist').onclick = showHistory;
   $('btnHistClear').onclick = () => { histRun++; histData = null; stopPlay(); if (histLayer) map.removeLayer(histLayer); $('histInfo').textContent = ''; };
@@ -722,6 +732,7 @@ function listenPeople() {
         };
         if (data.moodTs && data.mood) react('seenMood_', data.moodTs, `${data.avatar || '💗'} ${data.name}: ${data.mood}`);
         if (data.msgTs && data.msg) react('seenMsg_', data.msgTs, `💌 ${data.name}: “${data.msg}”`);
+        checkPlaceAlerts(false, d.id);
       }
       if (d.id !== cfg.uid && data.heartTs) {
         const k = 'seenHeart_' + d.id;
@@ -1345,7 +1356,7 @@ function renderUs() {
 function listenPlaces() {
   onSnapshot(collection(db, 'rooms', cfg.room, 'places'), (snap) => {
     places = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    renderPlaces();
+    renderPlaces(); checkPlaceAlerts(true); // lugar nuevo o borrado: se pone al día sin avisar
   }, () => {});
 }
 function addPlace(lat, lng) {
@@ -1370,6 +1381,37 @@ function renderPlaces() {
       ['🗑', () => confirm(`¿Borrar "${p.name}"?`) && deleteDoc(doc(db, 'rooms', cfg.room, 'places', p.id))]]
       .forEach(([t, fn]) => { const b = document.createElement('button'); b.textContent = t; b.onclick = fn; row.appendChild(b); });
     list.appendChild(row);
+  });
+}
+
+// ---------- Avisos de llegada / salida ----------
+// Con la app abierta avisa esta pantalla; con la app cerrada avisa el servicio nativo (TrackService).
+// Al abrir/volver a la app el estado se pone al día en silencio, para no repetir avisos.
+const PLACE_IN = 150, PLACE_OUT = 250, PLACE_STALE = 30 * 60e3; // metros / ms (radio fijo para todos los lugares)
+const placeState = {}; // uid -> { in: id del lugar o '', ts: última posición revisada, ready }
+function checkPlaceAlerts(silent, onlyId) {
+  if (!cfg) return;
+  Object.entries(people).forEach(([id, p]) => {
+    if (id === cfg.uid || (onlyId && id !== onlyId) || p.lat == null || !p.ts) return;
+    const st = placeState[id] || (placeState[id] = { in: '', ts: 0, ready: false });
+    if (!silent && p.ts === st.ts) return; // misma posición de antes
+    st.ts = p.ts;
+    const quiet = silent || !st.ready || !placeAlerts || Date.now() - p.ts > PLACE_STALE;
+    st.ready = true;
+    const who = `${p.avatar || '💗'} ${p.name || 'Tu amor'}`;
+    const cur = places.find((x) => x.id === st.in);
+    if (st.in && (!cur || dist(p, cur) > PLACE_OUT)) {
+      if (cur && !quiet) { toast(`${who} salió de ${cur.emoji || ''} ${cur.name}`); navigator.vibrate?.(60); }
+      st.in = '';
+    }
+    if (!st.in) {
+      let best = null, bd = PLACE_IN;
+      places.forEach((x) => { const d = dist(p, x); if (d < bd) { bd = d; best = x; } });
+      if (best) {
+        st.in = best.id;
+        if (!quiet) { toast(`${who} llegó a ${best.emoji || ''} ${best.name}`); navigator.vibrate?.(60); }
+      }
+    }
   });
 }
 
