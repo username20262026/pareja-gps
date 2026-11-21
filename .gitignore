@@ -8,3 +8,5 @@ node_modules/
 *.jks
 *.apk
 clave.json
+
+android/app/google-services.json
