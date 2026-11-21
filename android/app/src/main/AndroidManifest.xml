@@ -28,6 +28,12 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
             <service android:name=".TrackService" android:exported="false" android:foregroundServiceType="location" />
+        <!-- Notificaciones push (mensajes, corazones y llamadas con la app cerrada) -->
+        <service android:name=".ParejaPushService" android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
         <receiver android:name=".BootReceiver" android:exported="true" android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

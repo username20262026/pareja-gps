@@ -616,28 +616,7 @@ public class TrackService extends Service {
     }
 
     private void notifyUser(int id, String title, String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel("pareja_msgs", "Mensajes y reacciones", NotificationManager.IMPORTANCE_HIGH);
-            nm.createNotificationChannel(ch);
-        }
-        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pi = open == null ? null : PendingIntent.getActivity(this, 0, open, piFlags);
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, "pareja_msgs");
-        else b = new Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH);
-        b.setContentTitle(title);
-        b.setContentText(text);
-        b.setStyle(new Notification.BigTextStyle().bigText(text));
-        b.setSmallIcon(android.R.drawable.stat_notify_chat);
-        b.setAutoCancel(true);
-        if (pi != null) b.setContentIntent(pi);
-        b.setWhen(System.currentTimeMillis());
-        b.setShowWhen(true);
-        nm.notify(id, b.build());
+        ParejaAvisos.notifyUser(this, id, title, text);
     }
 
     /** Siempre desde el hilo "io". Solo avisa si la app NO esta abierta. */
@@ -792,36 +771,6 @@ public class TrackService extends Service {
     }
 
     private void notifyCall() {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        android.net.Uri snd = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE);
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel("pareja_llamada", "Llamadas", NotificationManager.IMPORTANCE_HIGH);
-            ch.setSound(snd, new android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
-            ch.enableVibration(true);
-            nm.createNotificationChannel(ch);
-        }
-        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pi = open == null ? null : PendingIntent.getActivity(this, 4950, open, piFlags);
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, "pareja_llamada");
-        else {
-            b = new Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH);
-            b.setSound(snd);
-            b.setDefaults(Notification.DEFAULT_VIBRATE);
-        }
-        b.setContentTitle("\uD83D\uDCDE Te está llamando tu pareja");
-        b.setContentText("Toca para contestar");
-        b.setSmallIcon(android.R.drawable.stat_sys_phone_call);
-        b.setCategory(Notification.CATEGORY_CALL);
-        b.setAutoCancel(true);
-        if (pi != null) b.setContentIntent(pi);
-        b.setWhen(System.currentTimeMillis());
-        b.setShowWhen(true);
-        nm.notify(4950, b.build());
+        ParejaAvisos.notifyCall(this, "");
     }
 }

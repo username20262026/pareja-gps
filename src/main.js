@@ -8,7 +8,7 @@ import {
   sendPasswordResetEmail, signOut
 } from 'firebase/auth';
 import {
-  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs
+  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, deleteField
 } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
 
@@ -179,13 +179,36 @@ async function startApp() {
   if (cfg.anniv) setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: cfg.anniv }, { merge: true }).catch(() => {});
   listenPeople(); listenPlaces(); listenMeta(); listenChat();
   lastKept = queue[queue.length - 1] || null;
-  maybeStartTracking(); initNative(); startCallWatcher();
+  maybeStartTracking(); initNative(); startCallWatcher(); registerPush();
   window.addEventListener('online', flush);
   setInterval(flush, 30000);
   setInterval(() => { renderUs(); renderPlaces(); }, 30000);
   flush(); renderUs();
 }
 const ensureAuth = async () => !!auth.currentUser;
+
+// Notificaciones push: guarda el token de este celular en el perfil (solo lo lee su dueño y la Cloud Function).
+// Es un mapa token -> sala porque la misma cuenta puede estar abierta en varios celulares.
+// La función solo avisa si la sala del token y la del perfil coinciden con la sala del mensaje/corazón/llamada.
+async function registerPush() {
+  if (!IS_NATIVE) return;
+  try {
+    const r = await Native.pushToken();
+    if (!r || !r.token) { if (r && r.error) console.warn('push', r.error); return; } // APK viejo o sin google-services.json
+    const old = localStorage.getItem('pushToken');
+    if (old === r.token && localStorage.getItem('pushRoom') === cfg.room) return;
+    const tokens = { [r.token]: { room: cfg.room, ts: Date.now() } };
+    if (old && old !== r.token) tokens[old] = deleteField(); // el token de este celular cambió
+    await setDoc(doc(db, 'profiles', cfg.uid), { pushTokens: tokens }, { merge: true });
+    localStorage.setItem('pushToken', r.token); localStorage.setItem('pushRoom', cfg.room);
+  } catch (e) { console.warn('push', e); }
+}
+// Al cerrar sesión o cambiar de sala este celular deja de recibir avisos
+async function unregisterPush() {
+  const t = localStorage.getItem('pushToken');
+  localStorage.removeItem('pushToken'); localStorage.removeItem('pushRoom');
+  if (t) await setDoc(doc(db, 'profiles', cfg.uid), { pushTokens: { [t]: deleteField() } }, { merge: true }).catch(() => {});
+}
 
 // ---------- Mapa ----------
 const OSM = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -435,13 +458,13 @@ function initUI() {
   };
   $('btnRoom').onclick = async () => {
     if (!confirm('¿Cambiar de sala? Tu cuenta se queda; solo eliges otro código.')) return;
-    await stopTracking();
+    await stopTracking(); await unregisterPush();
     await setDoc(doc(db, 'profiles', cfg.uid), { room: '' }, { merge: true }).catch(() => {});
     localStorage.removeItem('cfg_' + cfg.uid); localStorage.removeItem('queue'); location.reload();
   };
   $('btnLogout').onclick = async () => {
     if (!confirm('¿Cerrar sesión en este celular?')) return;
-    await stopTracking();
+    await stopTracking(); await unregisterPush();
     localStorage.removeItem('queue');
     await signOut(auth); location.reload();
   };

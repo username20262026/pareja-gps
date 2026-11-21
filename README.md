@@ -55,3 +55,22 @@ O genera el APK: `npm run apk` → android/app/build/outputs/apk/debug/app-debug
 ## Cómo funciona offline
 Cada punto se guarda primero en el teléfono. Una cola lo sube a Firebase cuando hay internet
 (al reconectar y cada 30 s). Los puntos usan su hora como ID, así que nunca se duplican.
+
+## Notificaciones push (mensajes, corazones y llamadas con la app cerrada)
+Usa Firebase Cloud Messaging. El servicio de ubicación ya avisaba cada 10 s, pero solo mientras estaba
+activo; los push llegan aunque la app y el servicio estén cerrados.
+
+1. Firebase console → ⚙️ Configuración del proyecto → **Tus apps** → si no hay app Android, *Agregar app* → Android,
+   paquete `com.pareja.gps`. Descarga **google-services.json** y cópialo a `android/app/google-services.json`.
+2. El proyecto debe estar en el plan **Blaze** (pago por uso; con 2 personas queda dentro de la capa gratis).
+3. Revisa la región en `functions/index.js` (`setGlobalOptions`): debe ser la de tu Firestore.
+4. Publica las funciones (una sola vez y cada vez que cambies `functions/`):
+   ```
+   npm install -g firebase-tools
+   firebase login
+   cd functions && npm install && cd ..
+   firebase deploy --only functions
+   ```
+5. Compila e instala el APK nuevo en **los dos** celulares y ábrelo una vez (así guarda su token).
+
+Los tokens quedan en `profiles/<uid>.pushTokens` (solo los lee su dueño; las reglas no cambian).

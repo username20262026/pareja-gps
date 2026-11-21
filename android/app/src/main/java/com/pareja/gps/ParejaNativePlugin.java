@@ -347,6 +347,31 @@ public class ParejaNativePlugin extends Plugin {
         call.resolve(r);
     }
 
+    // ---------- Notificaciones push (Firebase Cloud Messaging) ----------
+    // Devuelve el token de este celular para que la app lo guarde en Firestore (profiles/<uid>.push).
+    // Si falta google-services.json en la compilacion, responde sin token en vez de fallar.
+    @PluginMethod
+    public void pushToken(PluginCall call) {
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().getToken()
+                .addOnCompleteListener(t -> {
+                    JSObject r = new JSObject();
+                    if (t.isSuccessful() && t.getResult() != null) {
+                        r.put("token", t.getResult());
+                        getContext().getSharedPreferences(TrackService.PREFS, Context.MODE_PRIVATE).edit()
+                            .putString("fcmToken", t.getResult()).putBoolean("fcmDirty", false).apply();
+                    } else {
+                        r.put("error", t.getException() == null ? "sin token" : String.valueOf(t.getException().getMessage()));
+                    }
+                    call.resolve(r);
+                });
+        } catch (Exception e) { // FirebaseApp sin configurar (no hay google-services.json)
+            JSObject r = new JSObject();
+            r.put("error", String.valueOf(e.getMessage()));
+            call.resolve(r);
+        }
+    }
+
     // ---------- Widget de la pantalla de inicio ----------
     @PluginMethod
     public void setMapboxKey(PluginCall call) {
@@ -395,6 +420,7 @@ public class ParejaNativePlugin extends Plugin {
     @Override
     protected void handleOnResume() {
         TrackService.appVisible = true;
+        getContext().getSharedPreferences(TrackService.PREFS, Context.MODE_PRIVATE).edit().putInt("pChatCount", 0).apply();
     }
 
     @Override
