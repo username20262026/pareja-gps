@@ -10,3 +10,7 @@ node_modules/
 clave.json
 
 android/app/google-services.json
+
+service-account*.json
+*-firebase-adminsdk-*.json
+.wrangler/

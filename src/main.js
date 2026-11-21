@@ -213,7 +213,7 @@ async function startApp() {
 }
 const ensureAuth = async () => !!auth.currentUser;
 
-// Notificaciones push: guarda el token de este celular en el perfil (solo lo lee su dueño y la Cloud Function).
+// Notificaciones push: guarda el token de este celular en el perfil (solo lo lee su dueño y el Worker de push).
 // Es un mapa token -> sala porque la misma cuenta puede estar abierta en varios celulares.
 // La función solo avisa si la sala del token y la del perfil coinciden con la sala del mensaje/corazón/llamada.
 async function registerPush() {
@@ -228,6 +228,23 @@ async function registerPush() {
     await setDoc(doc(db, 'profiles', cfg.uid), { pushTokens: tokens }, { merge: true });
     localStorage.setItem('pushToken', r.token); localStorage.setItem('pushRoom', cfg.room);
   } catch (e) { console.warn('push', e); }
+}
+// Avisa a la pareja con una notificación push (aunque tenga la app cerrada).
+// La manda el Worker de Cloudflare (worker/push-worker.js): comprueba la sesión y la sala,
+// lee el token del celular de la pareja y llama a Firebase Cloud Messaging.
+// Si falla no pasa nada: el servicio de ubicación de la pareja igual avisa cuando lo encuentra.
+const PUSH_URL = 'https://push.nnxsw-proyect.date/notify';
+async function notifyPartner(type, extra = {}) {
+  try {
+    const u = auth.currentUser;
+    if (!u || !cfg.room) return;
+    const r = await fetch(PUSH_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await u.getIdToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: cfg.room, type, name: cfg.name || '', avatar: cfg.avatar || '', ts: Date.now(), ...extra })
+    });
+    if (!r.ok) console.warn('push', type, r.status, await r.text().catch(() => ''));
+  } catch (e) { console.warn('push', type, e); }
 }
 // Al cerrar sesión o cambiar de sala este celular deja de recibir avisos
 async function unregisterPush() {
@@ -428,21 +445,27 @@ function initUI() {
   };
   $('btnCenter').onclick = fitAll;
 
-  const sendHeart = () => { saveMe({ heartTs: Date.now() }); floatHearts(); toast('Corazón enviado 💗'); };
+  const sendHeart = () => {
+    const ts = Date.now();
+    saveMe({ heartTs: ts }).then(() => notifyPartner('heart', { ts }));
+    floatHearts(); toast('Corazón enviado 💗');
+  };
   $('btnHeart').onclick = sendHeart; $('btnHeart2').onclick = sendHeart;
 
   MOODS.forEach(([e, t]) => {
     const b = document.createElement('button');
     b.textContent = `${e} ${t}`; b.dataset.mood = `${e} ${t}`;
     b.onclick = () => {
-      saveMe({ mood: b.dataset.mood, moodTs: Date.now() });
+      const ts = Date.now(), mood = b.dataset.mood;
+      saveMe({ mood, moodTs: ts }).then(() => notifyPartner('mood', { ts, body: mood }));
       people[cfg.uid] = { ...people[cfg.uid], mood: b.dataset.mood }; renderUs(); toast('Estado actualizado');
     };
     $('moods').appendChild(b);
   });
   $('btnMsg').onclick = () => {
     const msg = $('inMsg').value.trim(); if (!msg) return;
-    saveMe({ msg, msgTs: Date.now() }); $('inMsg').value = ''; toast('Mensaje enviado 💌');
+    const ts = Date.now();
+    saveMe({ msg, msgTs: ts }).then(() => notifyPartner('msg', { ts, body: msg })); $('inMsg').value = ''; toast('Mensaje enviado 💌');
   };
   $('btnGo').onclick = () => {
     const p = otherPeople()[0];
@@ -914,6 +937,7 @@ function sendMsg(extra) {
   data.text = String(data.text || '').slice(0, 500);
   if (replyTo) data.replyTo = replyTo;
   setDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'chat', `${ts}${Math.random().toString(36).slice(2, 6)}`), data)
+    .then(() => notifyPartner('chat', { ts, body: data.replyTo ? `↩ ${data.text}` : (data.text || 'Nuevo mensaje') }))
     .catch(() => toast('No se pudo enviar el mensaje'));
   if (replyTo) setReply(null);
 }
@@ -1182,11 +1206,14 @@ async function startCall() {
   callId = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
   callRole = 'caller'; callActive = true;
   try {
-    await setDoc(callRef(), { callId, caller: cfg.uid, status: 'ringing', ts: Date.now() });
+    const ts = Date.now();
+    await setDoc(callRef(), { callId, caller: cfg.uid, status: 'ringing', ts });
+    notifyPartner('call', { callId, ts });
     await Native.callStartCall({ caller: true });
   } catch (e) {
     toast(e.message || 'No se pudo llamar');
     setDoc(callRef(), { status: 'ended', callId }, { merge: true }).catch(logErr('colgar llamada'));
+    notifyPartner('call_end', { callId });
     endCallLocal();
     return;
   }
@@ -1215,7 +1242,10 @@ async function acceptCall() {
 async function hangupCall() {
   const id = callId || callIncomingId;
   endCallLocal();
-  if (id) setDoc(callRef(), { status: 'ended', callId: id }, { merge: true }).catch(logErr('colgar llamada'));
+  if (id) {
+    setDoc(callRef(), { status: 'ended', callId: id }, { merge: true }).catch(logErr('colgar llamada'));
+    notifyPartner('call_end', { callId: id }); // quita el aviso de "te está llamando" en el otro celular
+  }
 }
 function startCallWatcher() {
   if (callWatcherOn) return;

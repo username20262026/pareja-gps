@@ -60,17 +60,15 @@ Cada punto se guarda primero en el teléfono. Una cola lo sube a Firebase cuando
 Usa Firebase Cloud Messaging. El servicio de ubicación ya avisaba cada 10 s, pero solo mientras estaba
 activo; los push llegan aunque la app y el servicio estén cerrados.
 
-1. Firebase console → ⚙️ Configuración del proyecto → **Tus apps** → si no hay app Android, *Agregar app* → Android,
-   paquete `com.pareja.gps`. Descarga **google-services.json** y cópialo a `android/app/google-services.json`.
-2. El proyecto debe estar en el plan **Blaze** (pago por uso; con 2 personas queda dentro de la capa gratis).
-3. Revisa la región en `functions/index.js` (`setGlobalOptions`): debe ser la de tu Firestore.
-4. Publica las funciones (una sola vez y cada vez que cambies `functions/`):
-   ```
-   npm install -g firebase-tools
-   firebase login
-   cd functions && npm install && cd ..
-   firebase deploy --only functions
-   ```
-5. Compila e instala el APK nuevo en **los dos** celulares y ábrelo una vez (así guarda su token).
+Las manda un **Worker de Cloudflare** gratis (carpeta `worker/`), así no hace falta el plan Blaze:
+la app le avisa al Worker cuando envías algo y él manda el push al celular de tu pareja.
+Pasos completos en [worker/README.md](worker/README.md). En resumen:
 
-Los tokens quedan en `profiles/<uid>.pushTokens` (solo los lee su dueño; las reglas no cambian).
+1. `android/app/google-services.json` (Firebase → Configuración → Tus apps → Android `com.pareja.gps`).
+2. Firebase → Configuración → Cuentas de servicio → **Generar nueva clave privada**.
+3. Cloudflare → Workers → crear `pareja-push`, pegar `worker/push-worker.js`, secreto `SERVICE_ACCOUNT`
+   con el JSON de la clave, dominio `push.nnxsw-proyect.date`.
+4. Compila e instala el APK nuevo en **los dos** celulares y ábrelo una vez (así guarda su token).
+
+Los tokens quedan en `profiles/<uid>.pushTokens` (solo los lee su dueño y el Worker; las reglas no cambian).
+La carpeta `functions/` es la versión con Cloud Functions (necesita Blaze); no hace falta publicarla.
