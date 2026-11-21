@@ -8,7 +8,8 @@ import {
   sendPasswordResetEmail, signOut
 } from 'firebase/auth';
 import {
-  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, deleteField
+  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, deleteField,
+  arrayUnion, arrayRemove
 } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
 
@@ -169,6 +170,26 @@ function showSetup(user, p) {
   };
 }
 
+// ---------- Sala: solo dos miembros ----------
+// rooms/<sala> guarda { members: [uid1, uid2] }. Las reglas de Firestore solo dejan leer y escribir
+// la sala a quien está en esa lista, y la lista se llena con las dos primeras cuentas que entran.
+let roomDenied = false;
+async function joinRoom() {
+  try {
+    await withTimeout(setDoc(doc(db, 'rooms', cfg.room), { members: arrayUnion(cfg.uid) }, { merge: true }), 10000);
+  } catch (e) {
+    // permission-denied: la sala ya tiene a dos personas. Otro error: sin internet, se reintenta solo.
+    if (e?.code === 'permission-denied') { roomDenied = true; console.warn('joinRoom', e); }
+  }
+}
+const roomError = (what) => (e) => {
+  console.error(what, e);
+  if (e?.code === 'permission-denied' && !roomError.shown) {
+    roomError.shown = true;
+    toast(roomDenied ? 'Esta sala ya tiene a dos personas. Revisa el código con tu pareja.' : 'Sin permiso para esta sala.');
+  }
+};
+
 // ---------- App ----------
 async function startApp() {
   $('hdrName').textContent = `${cfg.avatar} ${cfg.name}`;
@@ -176,6 +197,7 @@ async function startApp() {
   $('accInfo').textContent = `${cfg.email || ''} · en todos tus celulares eres el mismo usuario`;
   $('inAnniv2').value = anniv;
   initMap(); initUI();
+  await joinRoom();
   if (cfg.anniv) setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: cfg.anniv }, { merge: true }).catch(() => {});
   listenPeople(); listenPlaces(); listenMeta(); listenChat();
   lastKept = queue[queue.length - 1] || null;
@@ -459,6 +481,7 @@ function initUI() {
   $('btnRoom').onclick = async () => {
     if (!confirm('¿Cambiar de sala? Tu cuenta se queda; solo eliges otro código.')) return;
     await stopTracking(); await unregisterPush();
+    await setDoc(doc(db, 'rooms', cfg.room), { members: arrayRemove(cfg.uid) }, { merge: true }).catch(() => {});
     await setDoc(doc(db, 'profiles', cfg.uid), { room: '' }, { merge: true }).catch(() => {});
     localStorage.removeItem('cfg_' + cfg.uid); localStorage.removeItem('queue'); location.reload();
   };
@@ -756,7 +779,7 @@ function listenPeople() {
     });
     renderUs(); refreshHistUsers();
     if (firstFit && Object.keys(markers).length > 1) { fitAll(); firstFit = false; }
-  }, (e) => console.error('users', e));
+  }, roomError('users'));
 }
 // ---------- Chat ----------
 // Cada persona guarda sus mensajes en su propio lugar (rooms/.../users/<uid>/chat) y marca como "visto"
@@ -769,7 +792,7 @@ function listenChat() {
   onSnapshot(query(chatCol(cfg.uid, 'chat'), orderBy('ts', 'desc'), limit(150)), (snap) => {
     chat.mine = snap.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data() }));
     renderChat();
-  }, (e) => console.error('chat', e));
+  }, roomError('chat'));
   onSnapshot(query(chatCol(cfg.uid, 'reads'), orderBy('at', 'desc'), limit(300)), (snap) => {
     chat.myReads = new Set(snap.docs.map((d) => d.id)); chat.readsReady = true; renderChat();
   }, (e) => console.error('reads', e));
