@@ -405,6 +405,7 @@ function initUI() {
   $('btnCall').onclick = startCall;
   $('callAccept').onclick = acceptCall;
   $('callHangup').onclick = hangupCall;
+  $('callSpeaker').onclick = toggleSpeaker;
   $('menuDel').onclick = deleteMine;
   $('lbClose').onclick = closeLightbox;
   $('lightbox').onclick = (e) => { if (e.target.id === 'lightbox') closeLightbox(); };
@@ -1177,19 +1178,43 @@ async function deleteMine() {
 }
 // ---- Llamadas de voz: señalización por Firestore + audio WebRTC nativo ----
 let callActive = false, callRole = null, callId = null, callIncomingId = null;
-let callWatcherOn = false, callAnswerApplied = false, callUnsubs = [];
+let callWatcherOn = false, callAnswerApplied = false, callUnsubs = [], callSpeakerOn = false;
 const callRef = () => doc(db, 'rooms', cfg.room, 'call', 'current');
 const callCandCol = () => fsCollection(db, 'rooms', cfg.room, 'call', 'current', 'cand');
+// Nombre de la pareja para la pantalla de llamada (solo su nombre, sin el tuyo)
+function partnerName() {
+  const o = Object.entries(people).find(([id, p]) => id !== cfg.uid && p && p.name);
+  return o ? String(o[1].name) : 'tu pareja';
+}
+function setSpeakerUi(on) {
+  callSpeakerOn = on;
+  const b = $('callSpeaker');
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  b.textContent = on ? '🔊 Altavoz' : '🔈 Altavoz';
+}
+async function toggleSpeaker() {
+  const want = !callSpeakerOn;
+  try {
+    const r = await Native.callSpeaker({ on: want });
+    setSpeakerUi(r && typeof r.on === 'boolean' ? r.on : want);
+    if (r && r.on !== want) toast('No se pudo cambiar el altavoz');
+  } catch (e) {
+    toast(e.message || 'No se pudo cambiar el altavoz');
+  }
+}
 function showCall(title, status, incoming) {
   $('callTitle').textContent = title;
   $('callStatus').textContent = status;
   $('callAccept').classList.toggle('hidden', !incoming);
+  $('callSpeaker').classList.toggle('hidden', incoming);
   $('callOverlay').classList.remove('hidden');
 }
 function endCallLocal() {
   callUnsubs.forEach((f) => f()); callUnsubs = [];
   callActive = false; callRole = null; callId = null; callIncomingId = null; callAnswerApplied = false;
   Native.callEnd().catch(logErr('terminar llamada'));
+  setSpeakerUi(false);
   $('callOverlay').classList.add('hidden');
 }
 function listenCandidates() {
@@ -1218,7 +1243,7 @@ async function startCall() {
     return;
   }
   listenCandidates();
-  showCall('Llamando…', 'Esperando que conteste', false);
+  showCall(`Llamando a ${partnerName()}…`, 'Esperando que conteste', false);
 }
 async function acceptCall() {
   const id = callIncomingId;
@@ -1237,7 +1262,7 @@ async function acceptCall() {
     endCallLocal();
     return;
   }
-  showCall('En llamada', 'Conectando…', false);
+  showCall(partnerName(), 'Conectando…', false);
 }
 async function hangupCall() {
   const id = callId || callIncomingId;
@@ -1264,7 +1289,10 @@ function startCallWatcher() {
   Native.addListener('callState', (s) => {
     if (!callActive) return;
     if (s.state === 'ERROR') { toast('Error en la llamada'); hangupCall(); }
-    else if (s.state === 'CONNECTED' || s.state === 'COMPLETED') $('callStatus').textContent = 'En llamada 🎙️';
+    else if (s.state === 'CONNECTED' || s.state === 'COMPLETED') {
+      $('callTitle').textContent = partnerName();
+      $('callStatus').textContent = 'En llamada 🎙️';
+    }
     else if (s.state === 'FAILED') { toast('La llamada no pudo conectar'); hangupCall(); }
   });
   // Escucha la llamada de la sala: entrante, respuesta o fin
@@ -1274,7 +1302,7 @@ function startCallWatcher() {
     const fresh = Date.now() - (d.ts || 0) < 60000;
     if (d.status === 'ringing' && d.caller !== cfg.uid && !callActive && !callIncomingId && fresh) {
       callIncomingId = d.callId;
-      showCall('Te está llamando tu pareja', 'Llamada de voz', true);
+      showCall(partnerName(), 'Te está llamando…', true);
       navigator.vibrate?.([300, 200, 300]);
       return;
     }

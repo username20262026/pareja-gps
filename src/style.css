@@ -175,7 +175,7 @@ nav button.active{color:var(--rose);font-weight:700}
 .bub{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 
 /* ---- Llamada de voz ---- */
-.callov{position:fixed;inset:0;background:linear-gradient(160deg,#be185d,#4c0519);z-index:80;display:flex;align-items:center;justify-content:center;color:#fff}
+.callov{position:fixed;inset:0;background:linear-gradient(160deg,#be185d,#4c0519);z-index:2500;display:flex;align-items:center;justify-content:center;color:#fff}
 .callov.hidden{display:none}
 .call-box{text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px;padding:20px}
 .call-av{font-size:4rem;background:#ffffff26;width:110px;height:110px;border-radius:50%;display:flex;align-items:center;justify-content:center}
@@ -185,6 +185,8 @@ nav button.active{color:var(--rose);font-weight:700}
 .call-btns button{width:auto;padding:14px 22px;border-radius:999px;border:0;font-weight:700;color:#fff}
 .call-ok{background:#16a34a}
 .call-no{background:#dc2626}
+.call-spk{background:#ffffff33}
+.call-spk.on{background:#fff;color:#be185d!important}
 
 /* ---- Stickers y GIFs ---- */
 .ptabs{display:flex;gap:6px;margin-bottom:6px}

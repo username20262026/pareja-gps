@@ -565,9 +565,38 @@ public class ParejaNativePlugin extends Plugin {
         callPc = null; callAudio = null; callAudioSrc = null;
         callRemoteSet = false; callPendingIce.clear();
         try {
+            setSpeaker(false);
             android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(android.content.Context.AUDIO_SERVICE);
             am.setMode(android.media.AudioManager.MODE_NORMAL);
         } catch (Exception ignored) {}
+    }
+
+    // Altavoz: en Android 12+ se elige el dispositivo de comunicacion; en versiones viejas, setSpeakerphoneOn.
+    private boolean setSpeaker(boolean on) {
+        android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(android.content.Context.AUDIO_SERVICE);
+        if (am == null) return false;
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            if (!on) { am.clearCommunicationDevice(); return true; }
+            for (android.media.AudioDeviceInfo d : am.getAvailableCommunicationDevices()) {
+                if (d.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) return am.setCommunicationDevice(d);
+            }
+            return false;
+        }
+        am.setSpeakerphoneOn(on);
+        return true;
+    }
+
+    @PluginMethod
+    public void callSpeaker(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        try {
+            boolean ok = setSpeaker(on);
+            JSObject r = new JSObject();
+            r.put("on", ok ? on : !on);
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject("No se pudo cambiar el altavoz: " + e.getMessage());
+        }
     }
 
     @PluginMethod
@@ -622,6 +651,7 @@ public class ParejaNativePlugin extends Plugin {
             callPc.addTrack(callAudio, java.util.Collections.singletonList("stream0"));
             android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(android.content.Context.AUDIO_SERVICE);
             am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
+            setSpeaker(false); // cada llamada empieza por el auricular
             if (caller) {
                 callPc.createOffer(new SdpObserver() {
                     public void onCreateSuccess(SessionDescription d) { setLocalAndEmit(d); }
