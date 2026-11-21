@@ -42,8 +42,14 @@ service cloud.firestore {
     match /rooms/{room}/places/{id} {
       allow read, write: if isMember(room);
     }
+    // Clave del servidor de archivos: solo la ven y la cambian los dos de la sala (antes cualquier cuenta)
+    match /rooms/{room}/meta/server {
+      allow read: if isMember(room);
+      allow write: if isMember(room) && request.resource.data.keys().hasOnly(['clave'])
+        && request.resource.data.clave is string && request.resource.data.clave.size() > 0;
+    }
     match /rooms/{room}/meta/{id} {
-      allow read, write: if isMember(room);
+      allow read, write: if isMember(room) && id != 'server';
     }
     // Llamadas de voz: señal (call/current) y candidatos ICE (call/current/cand/*)
     match /rooms/{room}/call/{document=**} {
