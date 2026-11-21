@@ -8,7 +8,7 @@ import {
   sendPasswordResetEmail, signOut
 } from 'firebase/auth';
 import {
-  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs
+  doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, startAfter
 } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
 
@@ -18,6 +18,9 @@ const IS_NATIVE = Capacitor.isNativePlatform();
 const UPDATE_BASE = 'https://app-pareja-c1579.web.app';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Registra en la consola errores que no merecen un aviso en pantalla (antes se ignoraban en silencio).
+// Se ven con adb logcat (Chromium) o en chrome://inspect cuando el teléfono está conectado.
+const logErr = (where) => (e) => console.warn(`[${where}]`, e?.message || e);
 const withTimeout = (p, ms) =>
   Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
@@ -43,7 +46,7 @@ const markers = {}, people = {};
 const saveQ = () => localStorage.setItem('queue', JSON.stringify(queue));
 const userPath = () => ['rooms', cfg.room, 'users', cfg.uid];
 const saveMe = (data) =>
-  setDoc(doc(db, ...userPath()), { uid: cfg.uid, name: cfg.name, avatar: cfg.avatar, ...data }, { merge: true }).catch(() => {});
+  setDoc(doc(db, ...userPath()), { uid: cfg.uid, name: cfg.name, avatar: cfg.avatar, ...data }, { merge: true }).catch(logErr('guardar perfil'));
 
 // ---------- Utilidades ----------
 const dist = (a, b) => {
@@ -176,7 +179,7 @@ async function startApp() {
   $('accInfo').textContent = `${cfg.email || ''} · en todos tus celulares eres el mismo usuario`;
   $('inAnniv2').value = anniv;
   initMap(); initUI();
-  if (cfg.anniv) setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: cfg.anniv }, { merge: true }).catch(() => {});
+  if (cfg.anniv) setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: cfg.anniv }, { merge: true }).catch(logErr('guardar aniversario'));
   listenPeople(); listenPlaces(); listenMeta(); listenChat();
   lastKept = queue[queue.length - 1] || null;
   maybeStartTracking(); initNative(); startCallWatcher();
@@ -363,7 +366,7 @@ function initUI() {
     if (!k) return toast('Pega primero tu clave');
     if (!/^AIza[\w-]{35}$/.test(k)) return toast('Esa clave no parece válida (empieza con AIza y mide 39).');
     gKey = k; localStorage.setItem('gkey', k); $('inGKey').value = '';
-    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { gkey: k }, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { gkey: k }, { merge: true }).catch(logErr('guardar clave Google'));
     gStatus(); setStyle('google');
   };
   const mStatus = () => { $('mStatus').textContent = mKey ? '✅ Clave guardada. Mapa Mapbox y ajuste de rutas activos; tu pareja la recibe sola.' : 'Sin clave: las rutas se ajustan con el servicio gratuito.'; };
@@ -373,8 +376,8 @@ function initUI() {
     if (!k) return toast('Pega primero tu clave');
     if (!/^pk\.[\w-]+\.[\w-]+$/.test(k)) return toast('Esa clave no parece válida (empieza con pk.)');
     mKey = k; localStorage.setItem('mkey', k); $('inMKey').value = '';
-    if (IS_NATIVE) Native.setMapboxKey({ key: k }).catch(() => {});
-    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { mkey: k }, { merge: true }).catch(() => {});
+    if (IS_NATIVE) Native.setMapboxKey({ key: k }).catch(logErr('clave Mapbox'));
+    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { mkey: k }, { merge: true }).catch(logErr('guardar clave Mapbox'));
     mStatus(); setStyle('mapbox');
   };
   $('btnCenter').onclick = fitAll;
@@ -426,8 +429,8 @@ function initUI() {
   lineBtn();
   $('btnAnniv').onclick = () => {
     const v = $('inAnniv2').value; if (!v) return;
-    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: v }, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'profiles', cfg.uid), { anniv: v }, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: v }, { merge: true }).catch(logErr('guardar aniversario'));
+    setDoc(doc(db, 'profiles', cfg.uid), { anniv: v }, { merge: true }).catch(logErr('guardar aniversario perfil'));
     anniv = v; renderUs(); toast('Aniversario guardado 💕');
   };
   $('btnCopy').onclick = () => {
@@ -436,7 +439,7 @@ function initUI() {
   $('btnRoom').onclick = async () => {
     if (!confirm('¿Cambiar de sala? Tu cuenta se queda; solo eliges otro código.')) return;
     await stopTracking();
-    await setDoc(doc(db, 'profiles', cfg.uid), { room: '' }, { merge: true }).catch(() => {});
+    await setDoc(doc(db, 'profiles', cfg.uid), { room: '' }, { merge: true }).catch(logErr('salir de la sala'));
     localStorage.removeItem('cfg_' + cfg.uid); localStorage.removeItem('queue'); location.reload();
   };
   $('btnLogout').onclick = async () => {
@@ -488,7 +491,7 @@ async function startNativeTrack() {
       room: cfg.room, uid: cfg.uid, name: cfg.name || '', avatar: cfg.avatar || '', refreshToken: u.refreshToken
     });
     nativeTrack = true;
-    if (mKey) Native.setMapboxKey({ key: mKey }).catch(() => {});
+    if (mKey) Native.setMapboxKey({ key: mKey }).catch(logErr('clave Mapbox'));
     clearInterval(uiPollTimer);
     uiPollTimer = setInterval(pollNative, 2000); pollNative();
     return true;
@@ -508,8 +511,8 @@ function uiPoint(p) { // solo dibuja: el servicio nativo es quien guarda y sube 
   renderUs();
 }
 async function stopTracking() {
-  if (nativeTrack) { try { await Native.stopTracking(); } catch {} nativeTrack = false; clearInterval(uiPollTimer); }
-  if (watcherId) { try { await BG.removeWatcher({ id: watcherId }); } catch {} watcherId = null; }
+  if (nativeTrack) { try { await Native.stopTracking(); } catch (e) { logErr('detener GPS nativo')(e); } nativeTrack = false; clearInterval(uiPollTimer); }
+  if (watcherId) { try { await BG.removeWatcher({ id: watcherId }); } catch (e) { logErr('detener GPS')(e); } watcherId = null; }
   if (webWatchId != null) { navigator.geolocation.clearWatch(webWatchId); webWatchId = null; }
 }
 function toggleShare() {
@@ -643,7 +646,7 @@ async function initNative() {
     document.querySelectorAll('#wThemeChips button').forEach((b) => b.classList.toggle('active', +b.dataset.t === wStyle.theme));
     document.querySelectorAll('#wFrameChips button').forEach((b) => b.classList.toggle('active', +b.dataset.f === wStyle.frame));
     $('btnWMap').classList.toggle('active', wStyle.map);
-    if (IS_NATIVE) Native.setWidgetStyle(wStyle).catch(() => {});
+    if (IS_NATIVE) Native.setWidgetStyle(wStyle).catch(logErr('estilo widget'));
   };
   document.querySelectorAll('#wThemeChips button').forEach((b) => { b.onclick = () => { wStyle.theme = +b.dataset.t; wSave(); }; });
   document.querySelectorAll('#wFrameChips button').forEach((b) => { b.onclick = () => { wStyle.frame = +b.dataset.f; wSave(); }; });
@@ -653,10 +656,10 @@ async function initNative() {
   wSave();
   $('btnWidget').onclick = async () => {
     let ok = false;
-    try { ok = (await Native.pinWidget()).supported; } catch {}
+    try { ok = (await Native.pinWidget()).supported; } catch (e) { logErr('fijar widget')(e); }
     if (!ok) toast('Mantén presionada la pantalla de inicio → Widgets → Pareja GPS');
   };
-  $('btnAuto').onclick = async () => { try { await Native.openAutostart(); } catch {} toast('Activa "Inicio automático" o "Permitir en segundo plano" para Pareja GPS'); };
+  $('btnAuto').onclick = async () => { try { await Native.openAutostart(); } catch (e) { logErr('inicio automático')(e); } toast('Activa "Inicio automático" o "Permitir en segundo plano" para Pareja GPS'); };
   $('btnUpd').onclick = () => checkUpdate(true);
   $('btnUpdNow').onclick = doUpdate; $('btnUpdLater').onclick = () => $('updModal').classList.add('hidden');
   document.addEventListener('visibilitychange', () => {
@@ -738,25 +741,32 @@ function listenPeople() {
 // ---------- Chat ----------
 // Cada persona guarda sus mensajes en su propio lugar (rooms/.../users/<uid>/chat) y marca como "visto"
 // los de la otra en users/<uid>/reads. Así funciona con las reglas de Firebase que ya tienes.
-const chat = { mine: [], theirs: {}, seen: {}, myReads: new Set(), readsReady: false, partners: new Set(), first: {} };
+const chat = { mine: [], theirs: {}, seen: {}, myReads: new Set(), readsReady: false, partners: new Set(), first: {},
+  // Mensajes antiguos cargados al subir en el chat (fuera de los últimos 150 que se escuchan en vivo)
+  older: {}, done: {}, deleted: new Set(), loadingOlder: false };
+const CHAT_LIVE = 150, CHAT_PAGE = 50;
 const chatCol = (uid, sub) => collection(db, 'rooms', cfg.room, 'users', uid, sub);
 const chatOpen = () => !$('tab-chat').classList.contains('hidden') && !$('sheet').classList.contains('collapsed') && document.visibilityState === 'visible';
 
 function listenChat() {
-  onSnapshot(query(chatCol(cfg.uid, 'chat'), orderBy('ts', 'desc'), limit(150)), (snap) => {
+  onSnapshot(query(chatCol(cfg.uid, 'chat'), orderBy('ts', 'desc'), limit(CHAT_LIVE)), (snap) => {
     chat.mine = snap.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data() }));
+    keepFallenOff(cfg.uid, snap, chat.mine);
     renderChat();
   }, (e) => console.error('chat', e));
   onSnapshot(query(chatCol(cfg.uid, 'reads'), orderBy('at', 'desc'), limit(300)), (snap) => {
     chat.myReads = new Set(snap.docs.map((d) => d.id)); chat.readsReady = true; renderChat();
   }, (e) => console.error('reads', e));
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markSeen(); });
+  // Al llegar arriba del todo en el chat, traer mensajes más antiguos
+  $('chatList')?.addEventListener('scroll', (e) => { if (e.target.scrollTop < 80) loadOlderChat(); }, { passive: true });
 }
 function attachChatPartner(pid) {
   if (chat.partners.has(pid)) return;
   chat.partners.add(pid);
-  onSnapshot(query(chatCol(pid, 'chat'), orderBy('ts', 'desc'), limit(150)), (snap) => {
+  onSnapshot(query(chatCol(pid, 'chat'), orderBy('ts', 'desc'), limit(CHAT_LIVE)), (snap) => {
     chat.theirs[pid] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    keepFallenOff(pid, snap, chat.theirs[pid]);
     const fresh = chat.first[pid] ? snap.docChanges().filter((c) => c.type === 'added').map((c) => c.doc.data()) : [];
     chat.first[pid] = true;
     renderChat();
@@ -769,6 +779,66 @@ function attachChatPartner(pid) {
     snap.docs.forEach((d) => { chat.seen[d.id] = d.data().at; });
     renderChat();
   }, (e) => console.error('reads pareja', e));
+}
+// Si ya se cargaron mensajes antiguos y llega uno nuevo, el más viejo de los 150 "en vivo" sale de la
+// consulta. Lo guardamos en la lista de antiguos para que no quede un hueco en la conversación.
+// SUPOSICIÓN: un mensaje que sale y es más viejo que todos los que quedan salió por el límite, no porque
+// se borró (los borrados propios se marcan en chat.deleted; un borrado de la pareja justo en ese borde
+// podría seguir viéndose hasta reabrir la app).
+function keepFallenOff(uid, snap, live) {
+  const old = chat.older[uid];
+  if (!old || !old.length || live.length < CHAT_LIVE) return;
+  const minLive = live[live.length - 1].ts;
+  snap.docChanges().forEach((c) => {
+    if (c.type !== 'removed' || chat.deleted.has(c.doc.id)) return;
+    const d = c.doc.data();
+    if (d.ts <= minLive && !old.some((m) => m.id === c.doc.id)) old.push({ id: c.doc.id, ...d });
+  });
+}
+// Mensaje más antiguo que ya tenemos de una persona (en vivo + antiguos)
+function oldestTs(uid) {
+  const all = liveOf(uid).concat(chat.older[uid] || []);
+  return all.reduce((t, m) => Math.min(t, m.ts), Infinity);
+}
+const chatUids = () => [cfg.uid, ...chat.partners];
+const liveOf = (uid) => (uid === cfg.uid ? chat.mine : chat.theirs[uid] || []);
+// ¿Puede haber más antiguos? Solo si esa persona llenó los 150 en vivo (o ya empezamos a paginar)
+const mayHaveOlder = (u) => !chat.done[u] && (liveOf(u).length >= CHAT_LIVE || (chat.older[u] || []).length > 0);
+const moreOlder = () => chatUids().some(mayHaveOlder);
+// Trae la siguiente página de mensajes antiguos de cada persona (los 50 anteriores a lo que ya se ve)
+async function loadOlderChat() {
+  if (chat.loadingOlder || !moreOlder()) return;
+  chat.loadingOlder = true; renderOlderBar();
+  const list = $('chatList'), h0 = list.scrollHeight, top0 = list.scrollTop;
+  let added = 0;
+  try {
+    await Promise.all(chatUids().filter(mayHaveOlder).map(async (uid) => {
+      const from = oldestTs(uid);
+      if (!isFinite(from)) { chat.done[uid] = true; return; }
+      const snap = await withTimeout(getDocs(query(chatCol(uid, 'chat'), orderBy('ts', 'desc'), startAfter(from), limit(CHAT_PAGE))), 15000);
+      const arr = chat.older[uid] || (chat.older[uid] = []);
+      snap.docs.forEach((d) => { if (!arr.some((m) => m.id === d.id)) { arr.push({ id: d.id, old: true, ...d.data() }); added++; } });
+      if (snap.size < CHAT_PAGE) chat.done[uid] = true;
+    }));
+  } catch (e) {
+    console.warn('[chat] cargar antiguos', e);
+    toast('No se pudieron cargar mensajes anteriores');
+  }
+  chat.loadingOlder = false;
+  if (added) {
+    renderChat();
+    list.scrollTop = top0 + (list.scrollHeight - h0); // mantener a la vista lo que estabas leyendo
+  } else renderOlderBar();
+}
+// Aviso arriba de la lista: "cargando…" o "inicio de la conversación"
+function renderOlderBar() {
+  const list = $('chatList'); if (!list) return;
+  let bar = $('chatOlder');
+  if (!bar) { bar = document.createElement('div'); bar.id = 'chatOlder'; bar.className = 'day'; }
+  if (list.firstChild !== bar) list.prepend(bar);
+  const anyMsg = chat.mine.length || Object.values(chat.theirs).some((a) => a.length);
+  bar.textContent = chat.loadingOlder ? 'Cargando mensajes anteriores…' : moreOlder() ? '↑ Sube para ver mensajes anteriores' : 'Inicio de la conversación 💕';
+  bar.classList.toggle('hidden', !anyMsg);
 }
 function sendChat() {
   const text = $('inChat').value.trim(); if (!text) return;
@@ -848,7 +918,7 @@ async function toggleRecNative() {
 async function toggleRec() {
   if (IS_NATIVE) return toggleRecNative();
   if (recorder) { recorder.stop(); return; }
-  if (IS_NATIVE) { try { await Native.requestMic(); } catch {} }
+  if (IS_NATIVE) { try { await Native.requestMic(); } catch (e) { logErr('permiso micrófono')(e); } }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('Tu navegador no puede grabar audio');
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
@@ -884,7 +954,7 @@ function cancelRec() {
   if (IS_NATIVE && recNativeOn) {
     clearInterval(recNativeTimer); recNativeOn = false;
     $('recBar').classList.add('hidden'); $('btnRec').classList.remove('rec');
-    Native.cancelRec().catch(() => {});
+    Native.cancelRec().catch(logErr('cancelar grabación'));
     return;
   }
   if (!recorder) return; recCancel = true; recorder.stop();
@@ -901,7 +971,7 @@ async function getFileClave(forceAsk) {
     try {
       const s = await getDoc(doc(db, 'rooms', cfg.room, 'meta', 'server'));
       if (s.exists() && s.data().clave) { fileClaveCache = s.data().clave; return fileClaveCache; }
-    } catch {}
+    } catch (e) { logErr('leer clave servidor')(e); }
   }
   const c = (prompt('Clave del servidor de archivos (se guardará para los dos celulares):') || '').trim();
   if (!c) return null;
@@ -1012,10 +1082,15 @@ async function deleteMine() {
   const m = menuMsg; closeMsgMenu();
   if (!m) return;
   try {
-    if (m.fid) { try { await srvFetch(`/f/${m.fid}`, { method: 'DELETE' }); } catch {} }
+    if (m.fid) { try { await srvFetch(`/f/${m.fid}`, { method: 'DELETE' }); } catch (e) { logErr('borrar archivo servidor')(e); } }
+    chat.deleted.add(m.id);
     await deleteDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'chat', m.id));
+    if (chat.older[cfg.uid]) chat.older[cfg.uid] = chat.older[cfg.uid].filter((x) => x.id !== m.id);
+    renderChat();
     toast(m.pending ? 'Envío cancelado' : 'Mensaje eliminado para todos');
   } catch (e) {
+    chat.deleted.delete(m.id);
+    console.warn('[chat] eliminar', e);
     toast('No se pudo eliminar el mensaje');
   }
 }
@@ -1033,7 +1108,7 @@ function showCall(title, status, incoming) {
 function endCallLocal() {
   callUnsubs.forEach((f) => f()); callUnsubs = [];
   callActive = false; callRole = null; callId = null; callIncomingId = null; callAnswerApplied = false;
-  Native.callEnd().catch(() => {});
+  Native.callEnd().catch(logErr('terminar llamada'));
   $('callOverlay').classList.add('hidden');
 }
 function listenCandidates() {
@@ -1041,7 +1116,7 @@ function listenCandidates() {
     snap.docChanges().forEach((ch) => {
       if (ch.type !== 'added') return;
       const c = ch.doc.data();
-      if (callId && c.callId === callId && c.from !== cfg.uid) Native.callAddIce(c).catch(() => {});
+      if (callId && c.callId === callId && c.from !== cfg.uid) Native.callAddIce(c).catch(logErr('ICE llamada'));
     });
   }));
 }
@@ -1054,7 +1129,7 @@ async function startCall() {
     await Native.callStartCall({ caller: true });
   } catch (e) {
     toast(e.message || 'No se pudo llamar');
-    setDoc(callRef(), { status: 'ended', callId }, { merge: true }).catch(() => {});
+    setDoc(callRef(), { status: 'ended', callId }, { merge: true }).catch(logErr('colgar llamada'));
     endCallLocal();
     return;
   }
@@ -1083,7 +1158,7 @@ async function acceptCall() {
 async function hangupCall() {
   const id = callId || callIncomingId;
   endCallLocal();
-  if (id) setDoc(callRef(), { status: 'ended', callId: id }, { merge: true }).catch(() => {});
+  if (id) setDoc(callRef(), { status: 'ended', callId: id }, { merge: true }).catch(logErr('colgar llamada'));
 }
 function startCallWatcher() {
   if (callWatcherOn) return;
@@ -1097,7 +1172,7 @@ function startCallWatcher() {
   Native.addListener('callIce', (c) => {
     if (!callId) return;
     fsAddDoc(callCandCol(), { callId, from: cfg.uid, candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex })
-      .catch(() => {});
+      .catch(logErr('enviar ICE'));
   });
   Native.addListener('callState', (s) => {
     if (!callActive) return;
@@ -1119,7 +1194,7 @@ function startCallWatcher() {
     if (callActive && callRole === 'caller' && d.callId === callId && d.answer && !callAnswerApplied) {
       callAnswerApplied = true;
       $('callStatus').textContent = 'Conectando…';
-      Native.callSetRemote({ type: 'answer', sdp: d.answer.sdp }).catch(() => {});
+      Native.callSetRemote({ type: 'answer', sdp: d.answer.sdp }).catch(logErr('respuesta llamada'));
     }
     if (d.status === 'ended' && (callActive || callIncomingId) && d.callId === (callId || callIncomingId)) endCallLocal();
   }, () => {});
@@ -1208,7 +1283,7 @@ function markSeen() {
   if (!unread.length) return;
   const wb = writeBatch(db), at = Date.now();
   unread.slice(0, 400).forEach((m) => wb.set(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'reads', m.id), { at }));
-  wb.commit().catch(() => {});
+  wb.commit().catch(logErr('marcar visto'));
   unread.forEach((m) => chat.myReads.add(m.id));
 }
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
@@ -1221,7 +1296,10 @@ const dayLbl = (ts) => {
 };
 function renderChat(forceBottom) {
   const list = $('chatList'); if (!list) return;
-  const msgs = chat.mine.concat(...Object.values(chat.theirs)).sort((a, b) => a.ts - b.ts);
+  const seenIds = new Set();
+  const msgs = chat.mine.concat(...Object.values(chat.theirs), ...Object.values(chat.older))
+    .filter((m) => !chat.deleted.has(m.id) && !seenIds.has(m.id) && seenIds.add(m.id))
+    .sort((a, b) => a.ts - b.ts);
   const stick = forceBottom || list.scrollHeight - list.scrollTop - list.clientHeight < 90;
   list.innerHTML = '';
   if (!msgs.length) { const e = document.createElement('p'); e.className = 'muted'; e.textContent = 'Aún no hay mensajes. ¡Escribe el primero! 💌'; list.appendChild(e); }
@@ -1253,13 +1331,15 @@ function renderChat(forceBottom) {
     const sm = document.createElement('small');
     if (mine) {
       const at = chat.seen[m.id];
-      sm.textContent = m.pending ? `${hm(m.ts)} · 🕓 enviando` : at ? `${hm(m.ts)} · ✓✓ Visto ${whenLbl(at)}` : `${hm(m.ts)} · ✓ Enviado`;
+      // En los antiguos no sabemos si fue visto (solo se leen los últimos 300 "visto"), así que solo la hora
+      sm.textContent = m.pending ? `${hm(m.ts)} · 🕓 enviando` : at ? `${hm(m.ts)} · ✓✓ Visto ${whenLbl(at)}` : m.old ? hm(m.ts) : `${hm(m.ts)} · ✓ Enviado`;
       if (at) sm.className = 'seen';
     } else sm.textContent = hm(m.ts);
     b.appendChild(sm); list.appendChild(b);
     addSwipe(b, m);
     if (mine) addLongPress(b, () => openMsgMenu(m));
   });
+  renderOlderBar();
   if (stick) list.scrollTop = list.scrollHeight;
   const unread = chat.readsReady ? Object.values(chat.theirs).flat().filter((m) => !chat.myReads.has(m.id)).length : 0;
   const badge = $('chatBadge');
@@ -1279,7 +1359,7 @@ function listenMeta() {
     const m = s.exists() ? s.data().mkey : '';
     if (m && m !== mKey) {
       mKey = m; localStorage.setItem('mkey', m); window.refreshMStatus?.();
-      if (IS_NATIVE) Native.setMapboxKey({ key: m }).catch(() => {});
+      if (IS_NATIVE) Native.setMapboxKey({ key: m }).catch(logErr('clave Mapbox'));
       if (styleName === 'mapbox') setStyle('mapbox');
     }
     renderUs();
@@ -1352,7 +1432,7 @@ function addPlace(lat, lng) {
   const name = (prompt('¿Cómo se llama este lugar?') || '').trim();
   if (!name) return;
   addDoc(collection(db, 'rooms', cfg.room, 'places'),
-    { name: name.slice(0, 40), emoji: $('placeEmoji').value, lat, lng, by: cfg.name, ts: Date.now() }).catch(() => {});
+    { name: name.slice(0, 40), emoji: $('placeEmoji').value, lat, lng, by: cfg.name, ts: Date.now() }).catch(logErr('guardar lugar'));
   toast('Lugar guardado ⭐');
 }
 function renderPlaces() {
