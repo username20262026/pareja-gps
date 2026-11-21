@@ -55,3 +55,20 @@ O genera el APK: `npm run apk` → android/app/build/outputs/apk/debug/app-debug
 ## Cómo funciona offline
 Cada punto se guarda primero en el teléfono. Una cola lo sube a Firebase cuando hay internet
 (al reconectar y cada 30 s). Los puntos usan su hora como ID, así que nunca se duplican.
+
+## Notificaciones push (mensajes, corazones y llamadas con la app cerrada)
+Usa Firebase Cloud Messaging. El servicio de ubicación ya avisaba cada 10 s, pero solo mientras estaba
+activo; los push llegan aunque la app y el servicio estén cerrados.
+
+Las manda un **Worker de Cloudflare** gratis (carpeta `worker/`), así no hace falta el plan Blaze:
+la app le avisa al Worker cuando envías algo y él manda el push al celular de tu pareja.
+Pasos completos en [worker/README.md](worker/README.md). En resumen:
+
+1. `android/app/google-services.json` (Firebase → Configuración → Tus apps → Android `com.pareja.gps`).
+2. Firebase → Configuración → Cuentas de servicio → **Generar nueva clave privada**.
+3. Cloudflare → Workers → crear `pareja-push`, pegar `worker/push-worker.js`, secreto `SERVICE_ACCOUNT`
+   con el JSON de la clave, dominio `push.nnxsw-proyect.date`.
+4. Compila e instala el APK nuevo en **los dos** celulares y ábrelo una vez (así guarda su token).
+
+Los tokens quedan en `profiles/<uid>.pushTokens` (solo los lee su dueño y el Worker; las reglas no cambian).
+La carpeta `functions/` es la versión con Cloud Functions (necesita Blaze); no hace falta publicarla.

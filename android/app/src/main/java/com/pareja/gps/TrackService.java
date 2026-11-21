@@ -616,28 +616,7 @@ public class TrackService extends Service {
     }
 
     private void notifyUser(int id, String title, String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel("pareja_msgs", "Mensajes y reacciones", NotificationManager.IMPORTANCE_HIGH);
-            nm.createNotificationChannel(ch);
-        }
-        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pi = open == null ? null : PendingIntent.getActivity(this, 0, open, piFlags);
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, "pareja_msgs");
-        else b = new Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH);
-        b.setContentTitle(title);
-        b.setContentText(text);
-        b.setStyle(new Notification.BigTextStyle().bigText(text));
-        b.setSmallIcon(android.R.drawable.stat_notify_chat);
-        b.setAutoCancel(true);
-        if (pi != null) b.setContentIntent(pi);
-        b.setWhen(System.currentTimeMillis());
-        b.setShowWhen(true);
-        nm.notify(id, b.build());
+        ParejaAvisos.notifyUser(this, id, title, text);
     }
 
     /** Siempre desde el hilo "io". Solo avisa si la app NO esta abierta. */
@@ -672,6 +651,10 @@ public class TrackService extends Service {
         long heart = 0L;
         long mood = 0L;
         long msg = 0L;
+        double pLat = 0;
+        double pLng = 0;
+        long pTs = 0L;
+        boolean pHasLoc = false;
         for (int i = 0; i < docs.length(); i++) {
             JSONObject doc = docs.getJSONObject(i);
             String nm = doc.optString("name", "");
@@ -686,9 +669,21 @@ public class TrackService extends Service {
             heart = numL(f, "heartTs");
             mood = numL(f, "moodTs");
             msg = numL(f, "msgTs");
+            pHasLoc = f.has("lat") && f.has("lng");
+            pLat = numD(f, "lat");
+            pLng = numD(f, "lng");
+            pTs = numL(f, "ts");
         }
         if (pUid.length() == 0) return;
         if (name.length() == 0) name = "Tu amor";
+
+        // llegadas y salidas de los Lugares (en silencio si recien se pone al dia)
+        if (pHasLoc && pTs > 0) {
+            try {
+                checkPlaces(sp, tok, base, name, avatar, pLat, pLng, pTs, !sp.getBoolean("nReady", false) || !synced);
+            } catch (Exception ignored) {
+            }
+        }
 
         // primera vez (o al volver de tener la app abierta): se ponen al dia los marcadores sin avisar
         if (!sp.getBoolean("nReady", false) || !synced) {
@@ -763,6 +758,103 @@ public class TrackService extends Service {
         e.apply();
     }
 
+    private static double numD(JSONObject f, String k) {
+        JSONObject v = f.optJSONObject(k);
+        if (v == null) return 0;
+        try {
+            if (v.has("doubleValue")) return v.getDouble("doubleValue");
+            if (v.has("integerValue")) return Double.parseDouble(v.getString("integerValue"));
+        } catch (Exception ignored) {
+        }
+        return 0;
+    }
+
+    // ---------- Avisos de llegada / salida de los Lugares ----------
+    // Mismo criterio que la pantalla (main.js): entra a menos de 150 m, sale a mas de 250 m.
+    private static final float PLACE_IN = 150f;
+    private static final float PLACE_OUT = 250f;
+    private static final long PLACE_STALE_MS = 30L * 60L * 1000L;
+    private static final long PLACES_REFRESH_MS = 5L * 60L * 1000L;
+    private long placesTs = 0L;
+    private JSONArray placesCache = null; // [{id,name,emoji,lat,lng}]
+
+    /** Siempre desde el hilo "io". */
+    private void checkPlaces(SharedPreferences sp, String tok, String base, String name, String avatar,
+                             double lat, double lng, long ts, boolean silent) throws Exception {
+        boolean changed = false;
+        long now = System.currentTimeMillis();
+        if (placesCache == null || now - placesTs > PLACES_REFRESH_MS) {
+            StringBuilder out = new StringBuilder();
+            int code = httpGet(base + "/places?pageSize=100", tok, out);
+            if (code == 200) {
+                JSONArray docs = new JSONObject(out.toString()).optJSONArray("documents");
+                JSONArray list = new JSONArray();
+                if (docs != null) {
+                    for (int i = 0; i < docs.length(); i++) {
+                        JSONObject d = docs.getJSONObject(i);
+                        JSONObject f = d.optJSONObject("fields");
+                        if (f == null || !f.has("lat") || !f.has("lng")) continue;
+                        String n = d.optString("name", "");
+                        JSONObject p = new JSONObject();
+                        p.put("id", n.substring(n.lastIndexOf('/') + 1));
+                        p.put("name", strF(f, "name"));
+                        p.put("emoji", strF(f, "emoji"));
+                        p.put("lat", numD(f, "lat"));
+                        p.put("lng", numD(f, "lng"));
+                        list.put(p);
+                    }
+                }
+                changed = placesCache == null || !placesCache.toString().equals(list.toString());
+                placesCache = list;
+                placesTs = now;
+            } else if (code == 401 || code == 403) {
+                idToken = null;
+            }
+        }
+        if (placesCache == null) return;
+        if (!silent && !changed && ts == sp.getLong("plTs", 0L)) return; // misma posicion de antes
+
+        boolean quiet = silent || changed || !sp.getBoolean("plAlerts", true) || now - ts > PLACE_STALE_MS;
+        String in = sp.getString("plIn", "");
+        String who = (avatar.length() > 0 ? avatar + " " : "") + name;
+        SharedPreferences.Editor e = sp.edit();
+        float[] r = new float[1];
+        if (in.length() > 0) {
+            JSONObject cur = null;
+            for (int i = 0; i < placesCache.length(); i++) {
+                if (in.equals(placesCache.getJSONObject(i).optString("id"))) cur = placesCache.getJSONObject(i);
+            }
+            boolean out = cur == null;
+            if (cur != null) {
+                Location.distanceBetween(lat, lng, cur.getDouble("lat"), cur.getDouble("lng"), r);
+                out = r[0] > PLACE_OUT;
+            }
+            if (out) {
+                if (cur != null && !quiet) notifyUser(4805, who, "sali\u00f3 de " + cur.optString("emoji") + " " + cur.optString("name"));
+                in = "";
+            }
+        }
+        if (in.length() == 0) {
+            JSONObject best = null;
+            float bd = PLACE_IN;
+            for (int i = 0; i < placesCache.length(); i++) {
+                JSONObject p = placesCache.getJSONObject(i);
+                Location.distanceBetween(lat, lng, p.getDouble("lat"), p.getDouble("lng"), r);
+                if (r[0] < bd) {
+                    bd = r[0];
+                    best = p;
+                }
+            }
+            if (best != null) {
+                in = best.optString("id");
+                if (!quiet) notifyUser(4805, who, "lleg\u00f3 a " + best.optString("emoji") + " " + best.optString("name"));
+            }
+        }
+        e.putString("plIn", in);
+        e.putLong("plTs", ts);
+        e.apply();
+    }
+
     /** Siempre desde el hilo "io". Avisa de una llamada entrante aunque la app este cerrada. */
     private void checkCallNotif() throws Exception {
         if (appVisible) return; // con la app abierta, la propia app muestra la llamada
@@ -792,36 +884,6 @@ public class TrackService extends Service {
     }
 
     private void notifyCall() {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        android.net.Uri snd = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE);
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel("pareja_llamada", "Llamadas", NotificationManager.IMPORTANCE_HIGH);
-            ch.setSound(snd, new android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
-            ch.enableVibration(true);
-            nm.createNotificationChannel(ch);
-        }
-        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pi = open == null ? null : PendingIntent.getActivity(this, 4950, open, piFlags);
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, "pareja_llamada");
-        else {
-            b = new Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH);
-            b.setSound(snd);
-            b.setDefaults(Notification.DEFAULT_VIBRATE);
-        }
-        b.setContentTitle("\uD83D\uDCDE Te está llamando tu pareja");
-        b.setContentText("Toca para contestar");
-        b.setSmallIcon(android.R.drawable.stat_sys_phone_call);
-        b.setCategory(Notification.CATEGORY_CALL);
-        b.setAutoCancel(true);
-        if (pi != null) b.setContentIntent(pi);
-        b.setWhen(System.currentTimeMillis());
-        b.setShowWhen(true);
-        nm.notify(4950, b.build());
+        ParejaAvisos.notifyCall(this, "");
     }
 }

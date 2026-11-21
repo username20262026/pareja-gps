@@ -1,0 +1,12 @@
+# Solo hace falta si publicas el Worker desde la computadora con:  npx wrangler deploy
+# (también se puede crear todo desde el panel de Cloudflare; ver README.md de esta carpeta)
+name = "pareja-push"
+main = "push-worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+routes = [
+  { pattern = "push.nnxsw-proyect.date", custom_domain = true }
+]
+
+# El secreto SERVICE_ACCOUNT NO va aquí. Se carga con:  npx wrangler secret put SERVICE_ACCOUNT
