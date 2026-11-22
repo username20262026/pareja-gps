@@ -1,5 +1,4 @@
 import { onSnapshot as fsOnSnapshot, addDoc as fsAddDoc, collection as fsCollection } from 'firebase/firestore';
-import '@fontsource-variable/nunito';
 import './style.css';
 import { icon, hydrateIcons, LOGO } from './icons.js';
 import 'leaflet/dist/leaflet.css';
