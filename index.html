@@ -97,13 +97,14 @@
               <div id="gifGrid" class="sgrid"></div>
             </div>
           </div>
-          <input id="filePick" type="file" hidden />
+          <input id="filePick" type="file" accept="image/*" multiple hidden />
+          <input id="camPick" type="file" accept="image/*" capture="environment" hidden />
           <div id="msgMenu" class="msgmenu hidden"><div class="mm-box"><p id="menuTxt"></p><button type="button" id="menuDel" class="mm-del"></button><button type="button" id="menuClose" class="mm-cancel">Cerrar</button></div></div>
           <div id="recBar" class="recbar hidden"><span>🔴 Grabando <b id="recTime">0:00</b></span><button type="button" id="recCancel">Cancelar</button></div>
           <div class="chatbar">
             <button type="button" id="btnEmoji" class="icb" aria-label="Emojis">😊</button>
             <input id="inChat" maxlength="500" autocomplete="off" placeholder="Escribe un mensaje 💬" />
-            <button type="button" id="btnFile" class="icb" aria-label="Enviar archivo">📎</button>
+            <button type="button" id="btnCam" class="icb" aria-label="Cámara y fotos">📷</button>
             <button type="button" id="btnRec" class="icb" aria-label="Grabar audio">🎤</button>
             <button id="btnChat" aria-label="Enviar">➤</button>
           </div>
@@ -219,6 +220,30 @@
     <button id="btnUpdLater" class="link">Más tarde</button>
   </div></div>
   <script type="module" src="/src/main.js"></script>
+<!-- Cámara estilo WhatsApp: cámara en vivo, fotos recientes abajo y galería al deslizar hacia arriba -->
+<div id="camScreen" class="camscr hidden">
+  <video id="camVideo" autoplay playsinline muted></video>
+  <div id="camMsg" class="cam-msg hidden"></div>
+  <button type="button" id="camClose" class="cam-x" aria-label="Cerrar">✕</button>
+  <div id="camBottom" class="cam-bottom">
+    <div class="cam-handle" id="camHandle"><span></span><small>Desliza hacia arriba para ver tus fotos</small></div>
+    <div id="camStrip" class="cam-strip"></div>
+    <div class="cam-ctrls">
+      <button type="button" id="camGal" class="cam-side" aria-label="Galería">🖼️</button>
+      <button type="button" id="camShot" class="cam-shot" aria-label="Sacar foto"></button>
+      <button type="button" id="camFlip" class="cam-side" aria-label="Cambiar cámara">🔄</button>
+    </div>
+  </div>
+  <div id="camSheet" class="cam-sheet hidden">
+    <div class="cam-sheet-top" id="camSheetTop"><span></span><b>Fotos</b><button type="button" id="camMore">Otras carpetas…</button></div>
+    <div id="camGrid" class="cam-grid"></div>
+  </div>
+  <div id="camPrev" class="cam-prev hidden">
+    <img id="camPrevImg" alt="Foto" />
+    <button type="button" id="camPrevX" class="cam-x" aria-label="Volver">✕</button>
+    <button type="button" id="camSend" class="cam-send" aria-label="Enviar">➤</button>
+  </div>
+</div>
 <div id="lightbox" class="lightbox hidden"><img id="lbImg" alt="Foto" /><button type="button" id="lbClose" aria-label="Cerrar">✕</button></div>
 <div id="callOverlay" class="callov hidden"><div class="call-box">
   <div class="call-top"><h3 id="callTitle"></h3><p id="callStatus"></p></div>
