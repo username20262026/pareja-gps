@@ -271,9 +271,11 @@ nav button[data-tab="us"].active .ic{fill:currentColor}
 
 /* ---------- Chat ---------- */
 /* En el chat el mapa queda como franja y el banner se oculta: la conversación ocupa el resto */
-#app.chat-open #mapWrap{flex-basis:104px}
+/* En el chat no se muestra el mapa: la conversación ocupa toda la pantalla bajo el encabezado */
+#app.chat-open #mapWrap{flex-basis:0;overflow:hidden;visibility:hidden}
 #app.chat-open #banner{max-height:0;margin-top:0;padding-top:0;padding-bottom:0;opacity:0}
-#app.chat-open #frame,#app.chat-open .fab button:not(#btnCenter){display:none}
+#app.chat-open #sheet{margin-top:0;border-radius:0}
+#sheet.chatmode .handle{display:none}
 #sheet.chatmode .tabs{position:relative;display:flex;flex-direction:column;overflow:hidden;padding-bottom:var(--s2);background:var(--pattern) var(--surface);background-blend-mode:normal}
 #sheet.chatmode .tabs::before{content:'';position:absolute;inset:0;background:var(--surface);opacity:calc(1 - .45 * var(--pattern-o));pointer-events:none;z-index:0}
 #sheet.chatmode .tabs>*{position:relative;z-index:1}

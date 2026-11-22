@@ -432,7 +432,12 @@ function glide(mk, to) {
   };
   mk._glide = requestAnimationFrame(step);
 }
+let pendingFit = false;
 function fitAll() {
+  // Con el mapa oculto (chat abierto) mide 0: se encuadra al volver a mostrarlo
+  const sz = map.getSize();
+  if (!sz.x || !sz.y) { pendingFit = true; return; }
+  pendingFit = false;
   const pts = Object.values(markers).map((m) => m.getLatLng());
   if (pts.length === 1) map.setView(pts[0], 16);
   else if (pts.length > 1) map.fitBounds(L.latLngBounds(pts), { padding: [60, 90] });
@@ -460,7 +465,10 @@ function updatePair() {
 // El mapa cambia de tamaño con una transición: se reajusta durante y al final
 function fixMapSize() {
   if (!map) return;
-  [120, 400].forEach((ms) => setTimeout(() => map.invalidateSize({ pan: false }), ms));
+  [120, 400].forEach((ms) => setTimeout(() => {
+    map.invalidateSize({ pan: false });
+    if (ms === 400 && pendingFit) fitAll();
+  }, ms));
 }
 function setCollapsed(on) {
   $('sheet').classList.toggle('collapsed', on);
