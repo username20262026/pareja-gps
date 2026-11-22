@@ -55,7 +55,9 @@ import java.net.URL;
         @Permission(alias = "location", strings = { Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION }),
         @Permission(alias = "background", strings = { Manifest.permission.ACCESS_BACKGROUND_LOCATION }),
         @Permission(alias = "notifications", strings = { "android.permission.POST_NOTIFICATIONS" }),
-        @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO })
+        @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "photos", strings = { "android.permission.READ_MEDIA_IMAGES" }),
+        @Permission(alias = "photosOld", strings = { Manifest.permission.READ_EXTERNAL_STORAGE })
     }
 )
 public class ParejaNativePlugin extends Plugin {
@@ -434,6 +436,111 @@ public class ParejaNativePlugin extends Plugin {
                 });
             }
         });
+    }
+
+    // ---------- Fotos del celular para la cámara del chat (tira de recientes y galería) ----------
+    private String photosAlias() { return Build.VERSION.SDK_INT >= 33 ? "photos" : "photosOld"; }
+
+    @PluginMethod
+    public void recentPhotos(PluginCall call) {
+        if (getPermissionState(photosAlias()) == com.getcapacitor.PermissionState.GRANTED) { loadPhotos(call); return; }
+        if (!call.getBoolean("ask", true)) {
+            JSObject r = new JSObject();
+            r.put("denied", true);
+            r.put("items", new com.getcapacitor.JSArray());
+            call.resolve(r);
+            return;
+        }
+        requestPermissionForAlias(photosAlias(), call, "photosPermCallback");
+    }
+
+    @PermissionCallback
+    private void photosPermCallback(PluginCall call) {
+        if (getPermissionState(photosAlias()) == com.getcapacitor.PermissionState.GRANTED) { loadPhotos(call); return; }
+        JSObject r = new JSObject();
+        r.put("denied", true);
+        r.put("items", new com.getcapacitor.JSArray());
+        call.resolve(r);
+    }
+
+    private void loadPhotos(final PluginCall call) {
+        final int offset = Math.max(0, call.getInt("offset", 0));
+        final int limit = Math.max(1, Math.min(100, call.getInt("limit", 30)));
+        new Thread(() -> {
+            com.getcapacitor.JSArray items = new com.getcapacitor.JSArray();
+            android.content.ContentResolver cr = getContext().getContentResolver();
+            Uri col = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+            String[] proj = { android.provider.MediaStore.Images.Media._ID };
+            String sort = android.provider.MediaStore.Images.Media.DATE_ADDED;
+            android.database.Cursor c = null;
+            try {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    android.os.Bundle q = new android.os.Bundle();
+                    q.putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, new String[] { sort });
+                    q.putInt(android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION, android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING);
+                    q.putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit);
+                    q.putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset);
+                    c = cr.query(col, proj, q, null);
+                } else {
+                    c = cr.query(col, proj, null, null, sort + " DESC LIMIT " + limit + " OFFSET " + offset);
+                }
+                while (c != null && c.moveToNext()) {
+                    long id = c.getLong(0);
+                    Uri u = android.content.ContentUris.withAppendedId(col, id);
+                    android.graphics.Bitmap bm = null;
+                    try {
+                        if (Build.VERSION.SDK_INT >= 29) bm = cr.loadThumbnail(u, new android.util.Size(220, 220), null);
+                        else bm = android.provider.MediaStore.Images.Thumbnails.getThumbnail(cr, id, android.provider.MediaStore.Images.Thumbnails.MINI_KIND, null);
+                    } catch (Exception ignored) { }
+                    if (bm == null) continue;
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    bm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, bo);
+                    bm.recycle();
+                    JSObject it = new JSObject();
+                    it.put("id", String.valueOf(id));
+                    it.put("thumb", "data:image/jpeg;base64," + Base64.encodeToString(bo.toByteArray(), Base64.NO_WRAP));
+                    items.put(it);
+                }
+                JSObject r = new JSObject();
+                r.put("items", items);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject(String.valueOf(e.getMessage()));
+            } finally {
+                if (c != null) c.close();
+            }
+        }).start();
+    }
+
+    // Copia la foto elegida a la caché de la app para que la web la lea (Capacitor.convertFileSrc)
+    @PluginMethod
+    public void photoFile(final PluginCall call) {
+        final String sid = call.getString("id", "");
+        new Thread(() -> {
+            try {
+                long id = Long.parseLong(sid);
+                Uri u = android.content.ContentUris.withAppendedId(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                android.content.ContentResolver cr = getContext().getContentResolver();
+                File dir = new File(getContext().getCacheDir(), "fotos");
+                if (!dir.exists()) dir.mkdirs();
+                File[] old = dir.listFiles();
+                if (old != null) for (File f : old) f.delete();
+                File out = new File(dir, "foto_" + id + "_" + System.currentTimeMillis());
+                try (InputStream in = cr.openInputStream(u); OutputStream os = new FileOutputStream(out)) {
+                    if (in == null) throw new Exception("no se pudo leer la foto");
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                }
+                JSObject r = new JSObject();
+                r.put("path", out.getAbsolutePath());
+                String mime = cr.getType(u);
+                r.put("mime", mime == null ? "image/jpeg" : mime);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject(String.valueOf(e.getMessage()));
+            }
+        }).start();
     }
 
     // ---------- Grabación de audio nativa (no depende del WebView) ----------

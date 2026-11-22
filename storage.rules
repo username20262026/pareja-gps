@@ -1,0 +1,19 @@
+rules_version = '2';
+// Fotos del chat en Firebase Storage: rooms/<sala>/media/<uid>/<archivo>
+// Solo las dos cuentas de la sala (rooms/<sala>.members en Firestore) pueden verlas;
+// cada una sube y borra solo las suyas.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isMember(room) {
+      return request.auth != null &&
+        request.auth.uid in firestore.get(/databases/(default)/documents/rooms/$(room)).data.members;
+    }
+    match /rooms/{room}/media/{uid}/{file} {
+      allow read: if isMember(room);
+      allow create: if isMember(room) && request.auth.uid == uid
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isMember(room) && request.auth.uid == uid;
+    }
+  }
+}

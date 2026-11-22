@@ -11,7 +11,8 @@ import {
   doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, deleteField,
   arrayUnion, arrayRemove, startAfter
 } from 'firebase/firestore';
-import { auth, db } from './firebase.js';
+import { ref as sRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { auth, db, storage } from './firebase.js';
 
 const BG = registerPlugin('BackgroundGeolocation');
 const Native = registerPlugin('ParejaNative');
@@ -413,8 +414,7 @@ function initUI() {
   $('msgMenu').onclick = (e) => { if (e.target.id === 'msgMenu') closeMsgMenu(); };
   $('btnRec').onclick = toggleRec;
   $('recCancel').onclick = cancelRec;
-  $('btnFile').onclick = async () => { const ok = fileClaveCache || await getFileClave(); if (ok) $('filePick').click(); };
-  $('filePick').onchange = () => { const f = $('filePick').files[0]; $('filePick').value = ''; if (f) uploadFile(f); };
+  initCam();
   $('inChat').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } };
   $('handle').onclick = () => { $('sheet').classList.toggle('collapsed'); setTimeout(() => map.invalidateSize(), 250); };
   $('btnLayer').onclick = () => {
@@ -1041,56 +1041,221 @@ function cancelRec() {
   }
   if (!recorder) return; recCancel = true; recorder.stop();
 }
-// ---- Archivos y fotos (servidor propio de la pareja) ----
-const MAX_FILE = 100 * 1024 * 1024;
+// ---- Fotos del chat: se guardan en Firebase Storage (ya no hace falta la laptop encendida) ----
+// Las fotos viejas (con "fid") siguen viniendo del servidor propio, solo para verlas.
 const mediaCache = new Map(), mediaPending = new Map(), mediaFailed = new Map();
 const FILE_BASE = 'https://pareja-mia.duckdns.org';
 let fileClaveCache = null;
-// La clave vive en la sala de Firebase (rooms/<sala>/meta/server): la escribes una vez y la leen los dos celulares.
-async function getFileClave(forceAsk) {
-  if (!forceAsk && fileClaveCache) return fileClaveCache;
-  if (!forceAsk) {
-    try {
-      const s = await getDoc(doc(db, 'rooms', cfg.room, 'meta', 'server'));
-      if (s.exists() && s.data().clave) { fileClaveCache = s.data().clave; return fileClaveCache; }
-    } catch (e) { logErr('leer clave servidor')(e); }
-  }
-  const c = (prompt('Clave del servidor de archivos (se guardará para los dos celulares):') || '').trim();
-  if (!c) return null;
-  await setDoc(doc(db, 'rooms', cfg.room, 'meta', 'server'), { clave: c });
-  fileClaveCache = c;
-  return c;
+async function getFileClave() {
+  if (fileClaveCache) return fileClaveCache;
+  try {
+    const s = await getDoc(doc(db, 'rooms', cfg.room, 'meta', 'server'));
+    if (s.exists() && s.data().clave) { fileClaveCache = s.data().clave; return fileClaveCache; }
+  } catch (e) { logErr('leer clave servidor')(e); }
+  return null;
 }
 async function srvFetch(path, opts = {}) {
-  let clave = await getFileClave();
+  const clave = await getFileClave();
   if (!clave) throw new Error('Sin clave');
-  const send = () => fetch(FILE_BASE + path, { ...opts, headers: { ...(opts.headers || {}), 'x-clave': clave } });
-  let r = await send();
-  if (r.status === 401) {
-    // clave incorrecta o cambiada: se pide de nuevo una vez
-    fileClaveCache = null;
-    clave = await getFileClave(true);
-    if (!clave) throw new Error('Clave incorrecta');
-    r = await send();
-  }
-  if (r.status === 401) throw new Error('Clave incorrecta');
-  if (r.status === 429) throw new Error('Demasiados intentos, espera 15 min');
+  const r = await fetch(FILE_BASE + path, { ...opts, headers: { ...(opts.headers || {}), 'x-clave': clave } });
   if (!r.ok) throw new Error('Error ' + r.status);
   return r;
 }
-async function uploadFile(f) {
-  if (!(await getFileClave())) return;
-  if (f.size > MAX_FILE) return toast('Máximo 100 MB');
-  toast('Subiendo…');
+const MAX_SIDE = 1600, MAX_PHOTO = 40 * 1024 * 1024;
+// Achica la foto (las de la cámara pesan 4-8 MB) a 1600 px como máximo: sube rápido y ocupa poco
+async function shrinkImage(blob) {
+  if (blob.type === 'image/gif') return blob;
+  let bmp;
+  try { bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' }); } catch { return blob; }
+  const k = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  const out = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.82));
+  return out && (out.size < blob.size || k < 1) ? out : blob;
+}
+function storageErr(e) {
+  const c = (e && e.code) || '';
+  if (!navigator.onLine || c === 'storage/retry-limit-exceeded') return 'Sin internet: no se pudo enviar la foto';
+  if (c === 'storage/unauthorized') return 'No se pudo enviar: faltan publicar las reglas de Storage en Firebase';
+  if (c === 'storage/bucket-not-found' || c === 'storage/project-not-found' || c === 'storage/unknown') return 'No se pudo enviar: activa Storage en la consola de Firebase';
+  return 'No se pudo enviar la foto' + (e && e.message ? ': ' + e.message : '');
+}
+async function uploadPhoto(blob) {
+  if (!blob) return;
+  if (blob.type && !blob.type.startsWith('image/')) return toast('Solo se pueden enviar fotos');
+  if (blob.size > MAX_PHOTO) return toast('La foto es demasiado grande');
+  toast('Enviando foto…');
   try {
-    const type = f.type || 'application/octet-stream';
-    const r = await srvFetch('/upload', { method: 'POST', headers: { 'x-filename': encodeURIComponent(f.name), 'content-type': type }, body: f });
-    const j = await r.json();
-    const isImg = type.startsWith('image/');
-    sendMsg({ type: isImg ? 'image' : 'file', fid: j.id, fname: f.name, text: isImg ? '📷 Foto' : `📎 ${f.name}` });
+    const img = await shrinkImage(blob);
+    const type = img.type || 'image/jpeg';
+    const ext = { 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' }[type] || 'jpg';
+    const spath = `rooms/${cfg.room}/media/${cfg.uid}/${Date.now()}${Math.random().toString(36).slice(2, 6)}.${ext}`;
+    const r = sRef(storage, spath);
+    await uploadBytes(r, img, { contentType: type });
+    const url = await getDownloadURL(r);
+    sendMsg({ type: 'image', url, spath, text: '📷 Foto' });
   } catch (e) {
-    toast('No se pudo subir: ' + e.message + (e.message === 'Failed to fetch' ? ' (¿laptop encendida?)' : ''));
+    console.warn('[foto] subir', e);
+    toast(storageErr(e));
   }
+}
+
+// ---- Cámara estilo WhatsApp: cámara en vivo, fotos recientes abajo y galería al deslizar hacia arriba ----
+const cam = { stream: null, facing: 'environment', nativeGal: false, galOffset: 0, galDone: false, galBusy: false, prevBlob: null, prevUrl: null };
+const camOpen = () => !$('camScreen').classList.contains('hidden');
+const sheetOpen = () => !$('camSheet').classList.contains('hidden');
+const prevOpen = () => !$('camPrev').classList.contains('hidden');
+function camMsg(t) { $('camMsg').textContent = t; $('camMsg').classList.toggle('hidden', !t); }
+function openCam() {
+  $('camScreen').classList.remove('hidden');
+  closeCamSheet(); hidePrev();
+  $('camGrid').innerHTML = ''; cam.galOffset = 0; cam.galDone = false;
+  startCamStream();
+  loadRecent();
+}
+function closeCam() {
+  stopCamStream(); hidePrev(); closeCamSheet();
+  $('camScreen').classList.add('hidden');
+}
+async function startCamStream() {
+  stopCamStream(); camMsg('');
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('sin getUserMedia');
+    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    if (!camOpen() || prevOpen()) { s.getTracks().forEach((t) => t.stop()); return; }
+    cam.stream = s;
+    const v = $('camVideo');
+    v.srcObject = s; v.classList.toggle('front', cam.facing === 'user');
+    await v.play().catch(() => {});
+  } catch (e) {
+    console.warn('[cam]', e);
+    camMsg('No se pudo abrir la cámara aquí (revisa el permiso de Cámara de la app). Toca el botón blanco para usar la cámara del celular.');
+  }
+}
+function stopCamStream() {
+  if (cam.stream) cam.stream.getTracks().forEach((t) => t.stop());
+  cam.stream = null; $('camVideo').srcObject = null;
+}
+function shoot() {
+  const v = $('camVideo');
+  if (!cam.stream || !v.videoWidth) { $('camPick').click(); return; }
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  navigator.vibrate?.(20);
+  c.toBlob((b) => { if (b) showPrev(b); else toast('No se pudo sacar la foto'); }, 'image/jpeg', 0.9);
+}
+function showPrev(blob) {
+  if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
+  cam.prevBlob = blob; cam.prevUrl = URL.createObjectURL(blob);
+  $('camPrevImg').src = cam.prevUrl;
+  $('camPrev').classList.remove('hidden');
+  stopCamStream();
+}
+function hidePrev(restart) {
+  $('camPrev').classList.add('hidden');
+  $('camPrevImg').src = '';
+  if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
+  cam.prevBlob = null; cam.prevUrl = null;
+  if (restart && camOpen() && !sheetOpen()) startCamStream();
+}
+function sendPrev() {
+  const b = cam.prevBlob;
+  if (!b) return;
+  closeCam();
+  uploadPhoto(b);
+}
+// Fotos del celular (método nativo; con un APK viejo no existe y se usa el selector del sistema)
+async function nativePhotos(offset, lim, ask) {
+  if (!IS_NATIVE) return null;
+  try { return await Native.recentPhotos({ offset, limit: lim, ask }); } catch (e) { console.warn('[cam] fotos', e); return null; }
+}
+function thumbEl(it) {
+  const im = document.createElement('img');
+  im.src = it.thumb; im.alt = 'Foto'; im.loading = 'lazy';
+  im.onclick = () => pickNative(it.id);
+  return im;
+}
+async function loadRecent() {
+  const strip = $('camStrip');
+  strip.innerHTML = '';
+  const r = await nativePhotos(0, 30, true);
+  cam.nativeGal = !!(r && !r.denied);
+  strip.classList.toggle('hidden', !cam.nativeGal || !(r.items || []).length);
+  if (cam.nativeGal) (r.items || []).forEach((it) => strip.appendChild(thumbEl(it)));
+}
+async function pickNative(id) {
+  try {
+    const r = await Native.photoFile({ id });
+    const res = await fetch(Capacitor.convertFileSrc(r.path));
+    const b = await res.blob();
+    closeCamSheet();
+    showPrev(b.type ? b : new Blob([b], { type: r.mime || 'image/jpeg' }));
+  } catch (e) {
+    logErr('abrir foto')(e);
+    toast('No se pudo abrir esa foto');
+  }
+}
+function openCamSheet() {
+  if (!cam.nativeGal) { $('filePick').click(); return; }
+  $('camSheet').classList.remove('hidden');
+  stopCamStream();
+  if (!$('camGrid').childElementCount) moreGallery();
+}
+function closeCamSheet(restart) {
+  if (!sheetOpen()) return;
+  $('camSheet').classList.add('hidden');
+  if (restart && camOpen() && !prevOpen()) startCamStream();
+}
+async function moreGallery() {
+  if (cam.galBusy || cam.galDone) return;
+  cam.galBusy = true;
+  const r = await nativePhotos(cam.galOffset, 60, false);
+  cam.galBusy = false;
+  const items = (r && r.items) || [];
+  cam.galOffset += items.length;
+  if (items.length < 60) cam.galDone = true;
+  items.forEach((it) => $('camGrid').appendChild(thumbEl(it)));
+  if (!cam.galOffset) $('camGrid').innerHTML = '<p>No hay fotos en el celular</p>';
+}
+function initCam() {
+  $('btnCam').onclick = openCam;
+  $('camClose').onclick = () => { if (sheetOpen()) closeCamSheet(true); else closeCam(); };
+  $('camShot').onclick = shoot;
+  $('camFlip').onclick = () => { cam.facing = cam.facing === 'user' ? 'environment' : 'user'; startCamStream(); };
+  $('camGal').onclick = openCamSheet;
+  $('camMore').onclick = () => $('filePick').click();
+  $('camPrevX').onclick = () => hidePrev(true);
+  $('camSend').onclick = sendPrev;
+  $('camGrid').onscroll = () => { const g = $('camGrid'); if (g.scrollTop + g.clientHeight > g.scrollHeight - 300) moreGallery(); };
+  $('camPick').onchange = () => { const f = $('camPick').files[0]; $('camPick').value = ''; if (f) showPrev(f); };
+  $('filePick').onchange = () => {
+    const fs = [...$('filePick').files]; $('filePick').value = '';
+    if (!fs.length) return;
+    if (fs.length === 1) { closeCamSheet(); showPrev(fs[0]); return; }
+    closeCam();
+    fs.slice(0, 10).forEach((f) => uploadPhoto(f));
+  };
+  // Deslizar hacia arriba abre la galería; hacia abajo (arriba de todo) la cierra
+  let y0 = null, x0 = 0;
+  const scr = $('camScreen');
+  scr.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; }, { passive: true });
+  scr.addEventListener('touchend', (e) => {
+    if (y0 === null) return;
+    const t = e.changedTouches[0], dy = t.clientY - y0, dx = t.clientX - x0;
+    y0 = null;
+    if (prevOpen() || Math.abs(dy) < 60 || Math.abs(dx) > Math.abs(dy)) return;
+    if (dy < 0 && !sheetOpen()) openCamSheet();
+    else if (dy > 0 && sheetOpen() && $('camGrid').scrollTop <= 0) closeCamSheet(true);
+  }, { passive: true });
+  // La cámara se apaga si la app pasa a segundo plano
+  document.addEventListener('visibilitychange', () => {
+    if (!camOpen()) return;
+    if (document.hidden) stopCamStream();
+    else if (!prevOpen() && !sheetOpen()) startCamStream();
+  });
 }
 function loadBlob(fid) {
   if (mediaCache.has(fid)) return Promise.resolve(mediaCache.get(fid));
@@ -1114,15 +1279,26 @@ function closeLightbox() {
 }
 // Llamado por el botón atrás nativo: cierra lo abierto y devuelve true; si no hay nada, devuelve false
 window.__handleBack = () => {
+  if (camOpen()) {
+    if (prevOpen()) hidePrev(true);
+    else if (sheetOpen()) closeCamSheet(true);
+    else closeCam();
+    return true;
+  }
   if (!$('lightbox').classList.contains('hidden')) { closeLightbox(); return true; }
   if (!$('msgMenu').classList.contains('hidden')) { closeMsgMenu(); return true; }
   return false;
 };
 function mediaBubble(b, m) {
-  if (m.type === 'image') {
+  if (m.type === 'image' && m.url) {
+    const im = document.createElement('img'); im.className = 'mimg'; im.alt = 'Foto'; im.loading = 'lazy';
+    im.src = m.url; im.onclick = () => openLightbox(m.url);
+    im.onerror = () => { const s = document.createElement('small'); s.textContent = '📷 Foto no disponible'; im.replaceWith(s); };
+    b.appendChild(im);
+  } else if (m.type === 'image') {
     const im = document.createElement('img'); im.className = 'mimg'; im.alt = 'Foto';
     loadBlob(m.fid).then((u) => { im.src = u; im.onclick = () => openLightbox(u); })
-      .catch(() => { const s = document.createElement('small'); s.textContent = '📷 Foto no disponible (¿laptop encendida?)'; im.replaceWith(s); });
+      .catch(() => { const s = document.createElement('small'); s.textContent = '📷 Foto antigua no disponible'; im.replaceWith(s); });
     b.appendChild(im);
   } else {
     const a = document.createElement('a'); a.className = 'fl'; a.href = '#';
@@ -1164,6 +1340,7 @@ async function deleteMine() {
   const m = menuMsg; closeMsgMenu();
   if (!m) return;
   try {
+    if (m.spath) deleteObject(sRef(storage, m.spath)).catch(logErr('borrar foto'));
     if (m.fid) { try { await srvFetch(`/f/${m.fid}`, { method: 'DELETE' }); } catch (e) { logErr('borrar archivo servidor')(e); } }
     chat.deleted.add(m.id);
     await deleteDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'chat', m.id));
@@ -1441,7 +1618,7 @@ function renderChat(forceBottom) {
       const im = document.createElement('img'); im.className = 'stkimg'; im.alt = 'Sticker'; im.src = stickerUrl(m.sid); b.appendChild(im);
     } else if (m.type === 'gif' && m.url) {
       const im = document.createElement('img'); im.className = 'gifimg'; im.alt = 'GIF'; im.loading = 'lazy'; im.src = m.url; b.appendChild(im);
-    } else if ((m.type === 'image' || m.type === 'file') && m.fid) {
+    } else if ((m.type === 'image' || m.type === 'file') && (m.fid || m.url)) {
       mediaBubble(b, m);
     } else {
       const t = document.createElement('span'); t.textContent = m.text; b.appendChild(t);
