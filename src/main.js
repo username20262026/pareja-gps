@@ -1,5 +1,7 @@
 import { onSnapshot as fsOnSnapshot, addDoc as fsAddDoc, collection as fsCollection } from 'firebase/firestore';
+import '@fontsource-variable/nunito';
 import './style.css';
+import { icon, hydrateIcons, LOGO } from './icons.js';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -38,7 +40,7 @@ let showLine = localStorage.getItem('showLine') !== 'off';
 let map, baseLayer, histLayer, placesLayer, pairLine, pairLabel;
 let wStyle = (() => { try { return { theme: 0, frame: 0, map: true, label: '', ...JSON.parse(localStorage.getItem('wstyle') || '{}') }; } catch { return { theme: 0, frame: 0, map: true, label: '' }; } })();
 let mKey = localStorage.getItem('mkey') || '', gKey = localStorage.getItem('gkey') || '', gSession = '', gAttr = '', gAttrT, curStyle = '', styleSeq = 0;
-let frameName = localStorage.getItem('mapFrame') || 'hearts';
+let frameName = localStorage.getItem('mapFrame') || 'none';
 let watcherId = null, webWatchId = null, flushing = false, trackStarting = false, histRun = 0, lastKept = null, histData = null;
 const histOpts = { guess: true, dots: false };
 let placeAlerts = localStorage.getItem('placeAlerts') !== 'off';
@@ -69,9 +71,56 @@ const daysTogether = () => {
 };
 let toastT;
 function toast(msg) {
-  const t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
-  clearTimeout(toastT); toastT = setTimeout(() => t.classList.add('hidden'), 3500);
+  const t = $('toast'); t.textContent = msg; t.classList.remove('hidden', 'leaving');
+  t.style.animation = 'none'; void t.offsetWidth; t.style.animation = ''; // reinicia la entrada si ya se veía
+  clearTimeout(toastT); toastT = setTimeout(() => hideAnim(t), 3500);
 }
+// ---------- Ayudas de interfaz: animaciones de salida, ventanas propias y vibración ----------
+const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+// Oculta con animación de salida (clase .leaving en el CSS) y después pone .hidden
+function hideAnim(el, ms = 220) {
+  if (!el || el.classList.contains('hidden')) return Promise.resolve();
+  if (reduceMotion()) { el.classList.add('hidden'); return Promise.resolve(); }
+  el.classList.add('leaving');
+  return new Promise((res) => setTimeout(() => {
+    if (!el.classList.contains('leaving')) return res(); // se volvió a abrir mientras salía
+    el.classList.add('hidden'); el.classList.remove('leaving'); res();
+  }, ms));
+}
+const haptic = (ms = 10) => { try { navigator.vibrate?.(ms); } catch { /* sin vibración */ } };
+// Reemplazo de alert/confirm/prompt con la ventana de la app
+let dlgDone = null;
+function uiDialog(text, { ok = 'Aceptar', cancel = 'Cancelar', value = null, edit = false, placeholder = '' } = {}) {
+  if (dlgDone) dlgDone(false);
+  $('uiDlgTxt').textContent = text;
+  $('uiDlgOk').textContent = ok;
+  $('uiDlgNo').textContent = cancel || '';
+  $('uiDlgNo').classList.toggle('hidden', !cancel);
+  const inp = $('uiDlgIn');
+  inp.classList.toggle('hidden', value == null);
+  if (value != null) { inp.value = value; inp.readOnly = !edit; inp.placeholder = placeholder; inp.classList.toggle('edit', edit); }
+  $('uiDlg').classList.remove('hidden', 'leaving');
+  if (value != null) setTimeout(() => (edit ? inp.focus() : inp.select()), 60);
+  inp.onkeydown = (e) => { if (e.key === 'Enter') dlgDone?.(true); };
+  return new Promise((res) => {
+    // Con campo editable devuelve el texto (o null si se cancela); si no, true/false
+    dlgDone = (v) => { dlgDone = null; hideAnim($('uiDlg'), 160); res(edit ? (v ? inp.value : null) : v); };
+  });
+}
+const uiConfirm = (text, ok = 'Sí') => uiDialog(text, { ok });
+const uiAlert = (text) => uiDialog(text, { ok: 'Entendido', cancel: '' });
+function initDialog() {
+  $('uiDlgOk').onclick = () => dlgDone?.(true);
+  $('uiDlgNo').onclick = () => dlgDone?.(false);
+  $('uiDlg').onclick = (e) => { if (e.target.id === 'uiDlg') dlgDone?.(false); };
+}
+// Iconos SVG, logo y botón de ver contraseña (no dependen de la sesión)
+hydrateIcons();
+document.querySelectorAll('.logo').forEach((el) => { el.innerHTML = LOGO; });
+initDialog();
+// Recuerda dónde se tocó por última vez, para que el visor de fotos crezca desde la miniatura
+let lastTap = { x: innerWidth / 2, y: innerHeight / 2 };
+document.addEventListener('pointerdown', (e) => { lastTap = { x: e.clientX, y: e.clientY }; }, { capture: true, passive: true });
 function floatHearts(n = 14) {
   const box = $('hearts');
   for (let i = 0; i < n; i++) {
@@ -113,6 +162,14 @@ function initLogin() {
       await (isNew ? createUserWithEmailAndPassword(auth, email, pass) : signInWithEmailAndPassword(auth, email, pass));
     } catch (e) { msg(authError(e)); }
   };
+  $('lgEye').onclick = () => {
+    const show = $('lgPass').type === 'password';
+    $('lgPass').type = show ? 'text' : 'password';
+    $('lgEye').setAttribute('aria-pressed', String(show));
+    $('lgEye').setAttribute('aria-label', show ? 'Ocultar contraseña' : 'Mostrar contraseña');
+    $('lgEye').innerHTML = icon(show ? 'eyeOff' : 'eye');
+  };
+  $('lgPass').onkeydown = (e) => { if (e.key === 'Enter') run(false); };
   $('btnLogin').onclick = () => run(false);
   $('btnSignup').onclick = () => run(true);
   $('btnReset').onclick = async () => {
@@ -163,10 +220,10 @@ function showSetup(user, p) {
   $('btnSetupOut').onclick = () => signOut(auth);
   $('btnSave').onclick = async () => {
     const name = $('inName').value.trim(), room = $('inRoom').value.trim();
-    if (!name || room.length < 8) return alert('Pon tu nombre y un código de sala de al menos 8 caracteres.');
+    if (!name || room.length < 8) return uiAlert('Pon tu nombre y un código de sala de al menos 8 caracteres.');
     const profile = { name, avatar, room, anniv: $('inAnniv').value };
     try { await withTimeout(setDoc(doc(db, 'profiles', user.uid), profile), 10000); }
-    catch { return alert('No se pudo guardar. Revisa tu internet y las reglas de Firestore.'); }
+    catch { return uiAlert('No se pudo guardar. Revisa tu internet y las reglas de Firestore.'); }
     localStorage.setItem('cfg_' + user.uid, JSON.stringify(profile));
     cfg = { ...profile, uid: user.uid, email: user.email };
     anniv = profile.anniv || '';
@@ -330,7 +387,7 @@ async function setStyle(name) {
 // Marcos del mapa
 const FRAMES = { hearts: ['💗', '💕', '💕', '💗'], polaroid: [], gold: ['✦', '✦', '✦', '✦'], none: [] };
 function setFrame(name) {
-  if (!FRAMES[name]) name = 'hearts';
+  if (!FRAMES[name]) name = 'none';
   frameName = name; localStorage.setItem('mapFrame', name);
   $('mapWrap').className = 'f-' + name;
   $('frame').innerHTML = FRAMES[name].map((e) => `<i>${e}</i>`).join('');
@@ -359,8 +416,22 @@ function drawPerson(id, data, isMe) {
   if (d.lat == null) return;
   const icon = pinIcon(d.avatar, d.name, isMe);
   if (!markers[id]) markers[id] = L.marker([d.lat, d.lng], { icon, zIndexOffset: isMe ? 0 : 500 }).addTo(map);
-  else markers[id].setLatLng([d.lat, d.lng]).setIcon(icon);
+  else { markers[id].setIcon(icon); glide(markers[id], [d.lat, d.lng]); }
   updatePair();
+}
+// Desliza el marcador hasta su nueva posición en vez de saltar (saltos grandes: directo)
+function glide(mk, to) {
+  const from = mk.getLatLng();
+  cancelAnimationFrame(mk._glide);
+  const far = map.distance(from, to) > 3000;
+  if (far || reduceMotion() || document.visibilityState !== 'visible') { mk.setLatLng(to); return; }
+  const t0 = performance.now(), dur = 900;
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    mk.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]);
+    if (k < 1) mk._glide = requestAnimationFrame(step);
+  };
+  mk._glide = requestAnimationFrame(step);
 }
 function fitAll() {
   const pts = Object.values(markers).map((m) => m.getLatLng());
@@ -387,14 +458,32 @@ function updatePair() {
 }
 
 // ---------- Interfaz ----------
+// El mapa cambia de tamaño con una transición: se reajusta durante y al final
+function fixMapSize() {
+  if (!map) return;
+  [120, 400].forEach((ms) => setTimeout(() => map.invalidateSize({ pan: false }), ms));
+}
+function setCollapsed(on) {
+  $('sheet').classList.toggle('collapsed', on);
+  $('app').classList.toggle('sheet-collapsed', on);
+  fixMapSize();
+}
 function initUI() {
-  document.querySelectorAll('#nav button').forEach((b) => {
+  const navBtns = [...document.querySelectorAll('#nav button')];
+  navBtns.forEach((b, i) => {
     b.onclick = () => {
-      document.querySelectorAll('#nav button').forEach((x) => x.classList.toggle('active', x === b));
+      const prev = navBtns.findIndex((x) => x.classList.contains('active'));
+      if (prev === i && !$('sheet').classList.contains('collapsed')) return;
+      // La pestaña nueva entra desde el lado hacia el que se movió el dedo
+      document.documentElement.style.setProperty('--tab-dx', `${i >= prev ? 14 : -14}px`);
+      navBtns.forEach((x) => x.classList.toggle('active', x === b));
       document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== `tab-${b.dataset.tab}`));
-      $('sheet').classList.remove('collapsed'); setTimeout(() => map.invalidateSize(), 250);
-      $('sheet').classList.toggle('chatmode', b.dataset.tab === 'chat');
-      if (b.dataset.tab === 'chat') { renderChat(true); markSeen(); }
+      setCollapsed(false);
+      const isChat = b.dataset.tab === 'chat';
+      $('sheet').classList.toggle('chatmode', isChat);
+      $('app').classList.toggle('chat-open', isChat);
+      fixMapSize();
+      if (isChat) { renderChat(true); markSeen(); }
     };
   });
   $('btnChat').onclick = sendChat;
@@ -406,6 +495,7 @@ function initUI() {
   $('callAccept').onclick = acceptCall;
   $('callHangup').onclick = hangupCall;
   $('callSpeaker').onclick = toggleSpeaker;
+  $('callMute').onclick = toggleMute;
   $('menuDel').onclick = deleteMine;
   $('lbClose').onclick = closeLightbox;
   $('lightbox').onclick = (e) => { if (e.target.id === 'lightbox') closeLightbox(); };
@@ -415,7 +505,8 @@ function initUI() {
   $('recCancel').onclick = cancelRec;
   initCam();
   $('inChat').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } };
-  $('handle').onclick = () => { $('sheet').classList.toggle('collapsed'); setTimeout(() => map.invalidateSize(), 250); };
+  $('inChat').addEventListener('input', syncSendBtn);
+  $('handle').onclick = () => setCollapsed(!$('sheet').classList.contains('collapsed'));
   $('btnLayer').onclick = () => {
     const order = ['calle', 'satelite'].concat(gKey ? ['google'] : [], mKey ? ['mapbox'] : [], ['oscuro']);
     setStyle(order[(order.indexOf(curStyle) + 1) % order.length]);
@@ -448,7 +539,7 @@ function initUI() {
   const sendHeart = () => {
     const ts = Date.now();
     saveMe({ heartTs: ts }).then(() => notifyPartner('heart', { ts }));
-    floatHearts(); toast('Corazón enviado 💗');
+    floatHearts(); haptic(20); toast('Corazón enviado 💗');
   };
   $('btnHeart').onclick = sendHeart; $('btnHeart2').onclick = sendHeart;
 
@@ -458,7 +549,7 @@ function initUI() {
     b.onclick = () => {
       const ts = Date.now(), mood = b.dataset.mood;
       saveMe({ mood, moodTs: ts }).then(() => notifyPartner('mood', { ts, body: mood }));
-      people[cfg.uid] = { ...people[cfg.uid], mood: b.dataset.mood }; renderUs(); toast('Estado actualizado');
+      people[cfg.uid] = { ...people[cfg.uid], mood: b.dataset.mood }; renderUs(); haptic(); toast('Estado actualizado');
     };
     $('moods').appendChild(b);
   });
@@ -479,11 +570,11 @@ function initUI() {
     addPlace(me.lat, me.lng);
   };
   $('btnPlaceMap').onclick = () => {
-    addingPlace = true; $('sheet').classList.add('collapsed'); setTimeout(() => map.invalidateSize(), 250);
+    addingPlace = true; setCollapsed(true);
     toast('Toca en el mapa el lugar que quieres guardar');
   };
 
-  const alertsBtn = () => { $('btnPlaceAlerts').textContent = `🔔 Avisarme cuando llegue o salga de un lugar: ${placeAlerts ? 'sí' : 'no'}`; };
+  const alertsBtn = () => { $('btnPlaceAlerts').textContent = `Avisarme cuando llegue o salga de un lugar: ${placeAlerts ? 'sí' : 'no'}`; };
   $('btnPlaceAlerts').onclick = () => {
     placeAlerts = !placeAlerts; localStorage.setItem('placeAlerts', placeAlerts ? 'on' : 'off'); alertsBtn();
     if (IS_NATIVE) Native.setPlaceAlerts({ on: placeAlerts }).catch(() => {});
@@ -500,7 +591,7 @@ function initUI() {
   $('btnDots').onclick = () => { histOpts.dots = !histOpts.dots; $('btnDots').classList.toggle('active', histOpts.dots); paintHist(); };
 
   $('btnShare').onclick = toggleShare; updateShareBtn();
-  const lineBtn = () => { $('btnLine').textContent = `📏 Línea de distancia: ${showLine ? 'sí' : 'no'}`; };
+  const lineBtn = () => { $('btnLine').textContent = `Línea de distancia en el mapa: ${showLine ? 'sí' : 'no'}`; };
   $('btnLine').onclick = () => {
     showLine = !showLine; localStorage.setItem('showLine', showLine ? 'on' : 'off'); lineBtn(); updatePair();
   };
@@ -512,17 +603,19 @@ function initUI() {
     anniv = v; renderUs(); toast('Aniversario guardado 💕');
   };
   $('btnCopy').onclick = () => {
-    navigator.clipboard?.writeText(cfg.room).then(() => toast('Código copiado'), () => prompt('Tu código de sala:', cfg.room));
+    const show = () => uiDialog('Tu código de sala. Mantén presionado para copiarlo:', { ok: 'Listo', cancel: '', value: cfg.room });
+    if (!navigator.clipboard) return show();
+    navigator.clipboard.writeText(cfg.room).then(() => { haptic(); toast('Código copiado'); }, show);
   };
   $('btnRoom').onclick = async () => {
-    if (!confirm('¿Cambiar de sala? Tu cuenta se queda; solo eliges otro código.')) return;
+    if (!await uiConfirm('¿Cambiar de sala? Tu cuenta se queda; solo eliges otro código.', 'Cambiar sala')) return;
     await stopTracking(); await unregisterPush();
     await setDoc(doc(db, 'rooms', cfg.room), { members: arrayRemove(cfg.uid) }, { merge: true }).catch(logErr('salir de la sala'));
     await setDoc(doc(db, 'profiles', cfg.uid), { room: '' }, { merge: true }).catch(logErr('salir de la sala'));
     localStorage.removeItem('cfg_' + cfg.uid); localStorage.removeItem('queue'); location.reload();
   };
   $('btnLogout').onclick = async () => {
-    if (!confirm('¿Cerrar sesión en este celular?')) return;
+    if (!await uiConfirm('¿Cerrar sesión en este celular?', 'Cerrar sesión')) return;
     await stopTracking(); await unregisterPush();
     localStorage.removeItem('queue');
     await signOut(auth); location.reload();
@@ -544,8 +637,8 @@ async function startTracking() {
       },
       (loc, err) => {
         if (err) {
-          if (err.code === 'NOT_AUTHORIZED' &&
-              confirm('Falta el permiso de ubicación "Permitir todo el tiempo". ¿Abrir ajustes?')) BG.openSettings();
+          if (err.code === 'NOT_AUTHORIZED')
+            uiConfirm('Falta el permiso de ubicación "Permitir todo el tiempo". ¿Abrir ajustes?', 'Abrir ajustes').then((ok) => ok && BG.openSettings());
           return;
         }
         onPoint({ latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy, time: loc.time });
@@ -601,7 +694,7 @@ function toggleShare() {
   updateShareBtn();
 }
 function updateShareBtn() {
-  $('btnShare').textContent = sharing ? '⏸ Pausar compartir ubicación' : '▶ Reanudar compartir ubicación';
+  $('btnShare').textContent = sharing ? 'Pausar compartir ubicación' : 'Reanudar compartir ubicación';
   $('btnShare').className = sharing ? '' : 'ghost';
 }
 
@@ -665,7 +758,7 @@ function openPerms() {
   $('permModal').classList.remove('hidden'); renderPerms();
   clearInterval(permTimer); permTimer = setInterval(renderPerms, 2500);
 }
-function closePerms() { $('permModal').classList.add('hidden'); clearInterval(permTimer); }
+function closePerms() { hideAnim($('permModal'), 250); clearInterval(permTimer); }
 
 let pendingUpdate = null;
 async function checkUpdate(manual) {
@@ -740,7 +833,7 @@ async function initNative() {
   };
   $('btnAuto').onclick = async () => { try { await Native.openAutostart(); } catch (e) { logErr('inicio automático')(e); } toast('Activa "Inicio automático" o "Permitir en segundo plano" para Pareja GPS'); };
   $('btnUpd').onclick = () => checkUpdate(true);
-  $('btnUpdNow').onclick = doUpdate; $('btnUpdLater').onclick = () => $('updModal').classList.add('hidden');
+  $('btnUpdNow').onclick = doUpdate; $('btnUpdLater').onclick = () => hideAnim($('updModal'), 250);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && !$('permModal').classList.contains('hidden')) renderPerms();
   });
@@ -783,7 +876,9 @@ async function flush() {
   flushing = false; updateStatus();
 }
 function updateStatus() {
-  $('status').textContent = queue.length ? `📴 ${queue.length} pendientes` : (navigator.onLine ? '🟢 al día' : '📴 sin conexión');
+  // Solo se muestra cuando hay algo que avisar: sin conexión o puntos pendientes de subir
+  const t = queue.length ? `${queue.length} pendientes` : (navigator.onLine ? '' : 'Sin conexión');
+  $('status').textContent = t; $('status').classList.toggle('hidden', !t);
 }
 
 // ---------- Pareja en vivo ----------
@@ -831,6 +926,7 @@ const chatOpen = () => !$('tab-chat').classList.contains('hidden') && !$('sheet'
 function listenChat() {
   onSnapshot(query(chatCol(cfg.uid, 'chat'), orderBy('ts', 'desc'), limit(CHAT_LIVE)), (snap) => {
     chat.mine = snap.docs.map((d) => ({ id: d.id, pending: d.metadata.hasPendingWrites, ...d.data() }));
+    chat.ready = true;
     keepFallenOff(cfg.uid, snap, chat.mine);
     renderChat();
   }, roomError('chat'));
@@ -923,7 +1019,14 @@ function renderOlderBar() {
 function sendChat() {
   const text = $('inChat').value.trim(); if (!text) return;
   sendMsg({ text: text.slice(0, 500) });
-  $('inChat').value = '';
+  $('inChat').value = ''; syncSendBtn(); haptic();
+}
+// El botón de la punta es micrófono con el campo vacío y enviar cuando hay texto (como WhatsApp)
+function syncSendBtn() {
+  const has = !!$('inChat').value.trim();
+  if (recorder || $('btnRec').classList.contains('rec')) return;
+  $('btnChat').classList.toggle('hidden', !has);
+  $('btnRec').classList.toggle('hidden', has);
 }
 
 // ---- Chat: respuestas deslizando y emojis ----
@@ -1273,15 +1376,17 @@ function loadBlob(fid) {
 }
 // Visor de fotos dentro de la app (no abre otra aplicación)
 function openLightbox(u) {
-  $('lbImg').src = u;
-  $('lightbox').classList.remove('hidden');
+  const img = $('lbImg');
+  img.style.setProperty('--ox', `${lastTap.x}px`); img.style.setProperty('--oy', `${lastTap.y}px`);
+  img.src = u;
+  $('lightbox').classList.remove('hidden', 'leaving');
 }
 function closeLightbox() {
-  $('lightbox').classList.add('hidden');
-  $('lbImg').src = '';
+  hideAnim($('lightbox'), 240).then(() => { if ($('lightbox').classList.contains('hidden')) $('lbImg').src = ''; });
 }
 // Llamado por el botón atrás nativo: cierra lo abierto y devuelve true; si no hay nada, devuelve false
 window.__handleBack = () => {
+  if (!$('uiDlg').classList.contains('hidden')) { dlgDone?.(false); return true; }
   if (camOpen()) {
     if (prevOpen()) hidePrev(true);
     else if (sheetOpen()) closeCamSheet(true);
@@ -1326,7 +1431,7 @@ function addLongPress(el, fn) {
   el.addEventListener('touchstart', (e) => {
     x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
     cancel();
-    t = setTimeout(() => { t = null; navigator.vibrate?.(40); fn(); }, 500);
+    t = setTimeout(() => { t = null; haptic(25); fn(); }, 500);
   }, { passive: true });
   el.addEventListener('touchmove', (e) => {
     const d = e.touches[0];
@@ -1340,10 +1445,10 @@ let menuMsg = null;
 function openMsgMenu(m) {
   menuMsg = m;
   $('menuTxt').textContent = String(m.text || '').slice(0, 80);
-  $('menuDel').textContent = m.pending ? '✖ Cancelar envío' : '🗑 Eliminar para todos';
-  $('msgMenu').classList.remove('hidden');
+  $('menuDel').textContent = m.pending ? 'Cancelar envío' : 'Eliminar para todos';
+  $('msgMenu').classList.remove('hidden', 'leaving');
 }
-function closeMsgMenu() { $('msgMenu').classList.add('hidden'); menuMsg = null; }
+function closeMsgMenu() { hideAnim($('msgMenu'), 160); menuMsg = null; }
 async function deleteMine() {
   const m = menuMsg; closeMsgMenu();
   if (!m) return;
@@ -1363,7 +1468,8 @@ async function deleteMine() {
 }
 // ---- Llamadas de voz: señalización por Firestore + audio WebRTC nativo ----
 let callActive = false, callRole = null, callId = null, callIncomingId = null;
-let callWatcherOn = false, callAnswerApplied = false, callUnsubs = [], callSpeakerOn = false;
+let callWatcherOn = false, callAnswerApplied = false, callUnsubs = [], callSpeakerOn = false, callMuted = false;
+let callTimer = null, callT0 = 0;
 const callRef = () => doc(db, 'rooms', cfg.room, 'call', 'current');
 const callCandCol = () => fsCollection(db, 'rooms', cfg.room, 'call', 'current', 'cand');
 // Nombre de la pareja para la pantalla de llamada (solo su nombre, sin el tuyo)
@@ -1371,13 +1477,45 @@ function partnerName() {
   const o = Object.entries(people).find(([id, p]) => id !== cfg.uid && p && p.name);
   return o ? String(o[1].name) : 'tu pareja';
 }
+function partnerAvatar() {
+  const o = Object.entries(people).find(([id, p]) => id !== cfg.uid && p && p.avatar);
+  return o ? String(o[1].avatar) : '💗';
+}
 function setSpeakerUi(on) {
   callSpeakerOn = on;
   const b = $('callSpeaker');
   b.classList.toggle('on', on);
   b.setAttribute('aria-pressed', String(on));
-  b.textContent = on ? '🔊' : '🔈';
 }
+function setMuteUi(on) {
+  callMuted = on;
+  const b = $('callMute');
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  b.nextElementSibling.textContent = on ? 'Silenciado' : 'Silenciar';
+}
+async function toggleMute() {
+  const want = !callMuted;
+  try {
+    const r = await Native.callMute({ muted: want });
+    setMuteUi(r && typeof r.muted === 'boolean' ? r.muted : want);
+    haptic();
+  } catch (e) {
+    toast(e.message?.includes('not implemented') ? 'Actualiza la app para poder silenciar' : (e.message || 'No se pudo silenciar'));
+  }
+}
+// Contador de duración (00:42) cuando la llamada conecta
+function startCallTimer() {
+  if (callTimer) return;
+  callT0 = Date.now();
+  const tick = () => {
+    const sec = Math.floor((Date.now() - callT0) / 1000);
+    $('callStatus').textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+  };
+  tick(); callTimer = setInterval(tick, 1000);
+  $('callOverlay').classList.remove('ringing');
+}
+function stopCallTimer() { clearInterval(callTimer); callTimer = null; }
 async function toggleSpeaker() {
   const want = !callSpeakerOn;
   try {
@@ -1391,9 +1529,13 @@ async function toggleSpeaker() {
 function showCall(title, status, incoming) {
   $('callTitle').textContent = title;
   $('callStatus').textContent = status;
+  $('callAv').textContent = partnerAvatar();
   $('callAcceptWrap').classList.toggle('hidden', !incoming);
   $('callSpeakerWrap').classList.toggle('hidden', incoming);
-  $('callOverlay').classList.remove('hidden');
+  $('callMuteWrap').classList.toggle('hidden', incoming);
+  // Anillos que laten mientras suena (hasta que conecta)
+  if (!callTimer) $('callOverlay').classList.add('ringing');
+  $('callOverlay').classList.remove('hidden', 'leaving');
   // Mientras hay llamada se esconde todo lo del mapa (cartel "H y Juan", botones, corazones)
   document.body.classList.add('in-call');
 }
@@ -1401,8 +1543,8 @@ function endCallLocal() {
   callUnsubs.forEach((f) => f()); callUnsubs = [];
   callActive = false; callRole = null; callId = null; callIncomingId = null; callAnswerApplied = false;
   Native.callEnd().catch(logErr('terminar llamada'));
-  setSpeakerUi(false);
-  $('callOverlay').classList.add('hidden');
+  setSpeakerUi(false); setMuteUi(false); stopCallTimer();
+  hideAnim($('callOverlay'), 240).then(() => $('callOverlay').classList.remove('ringing'));
   document.body.classList.remove('in-call');
 }
 function listenCandidates() {
@@ -1479,7 +1621,7 @@ function startCallWatcher() {
     if (s.state === 'ERROR') { toast('Error en la llamada'); hangupCall(); }
     else if (s.state === 'CONNECTED' || s.state === 'COMPLETED') {
       $('callTitle').textContent = partnerName();
-      $('callStatus').textContent = 'En llamada 🎙️';
+      startCallTimer();
     }
     else if (s.state === 'FAILED') { toast('La llamada no pudo conectar'); hangupCall(); }
   });
@@ -1605,14 +1747,29 @@ function renderChat(forceBottom) {
     .sort((a, b) => a.ts - b.ts);
   const stick = forceBottom || list.scrollHeight - list.scrollTop - list.clientHeight < 90;
   list.innerHTML = '';
-  if (!msgs.length) { const e = document.createElement('p'); e.className = 'muted'; e.textContent = 'Aún no hay mensajes. ¡Escribe el primero! 💌'; list.appendChild(e); }
-  let day = null;
+  if (!msgs.length) {
+    if (!chat.ready) { // siluetas mientras llegan los mensajes
+      ['', 'r', '', 'r'].forEach((c, i) => { const k = document.createElement('div'); k.className = `skel ${c}`; k.style.width = `${[55, 40, 65, 35][i]}%`; list.appendChild(k); });
+    } else { const e = document.createElement('div'); e.className = 'empty'; e.innerHTML = '<span class="big">💌</span>Aún no hay mensajes.<br>¡Escribe el primero!'; list.appendChild(e); }
+  }
+  // Solo animan los mensajes que no estaban en la pantalla anterior
+  const shown = renderChat.shown || (renderChat.shown = new Set());
+  const firstPaint = !shown.size;
+  // "Visto" solo bajo tu último mensaje; en el resto, la hora y el tick
+  const lastMine = [...msgs].reverse().find((m) => m.uid === cfg.uid && !m.pending);
+  let day = null, prev = null;
   msgs.forEach((m) => {
     if (day == null || !sameDay(day, m.ts)) {
-      day = m.ts; const s = document.createElement('div'); s.className = 'day'; s.textContent = dayLbl(m.ts); list.appendChild(s);
+      day = m.ts; prev = null; const s = document.createElement('div'); s.className = 'day'; s.textContent = dayLbl(m.ts); list.appendChild(s);
     }
     const mine = m.uid === cfg.uid;
     const b = document.createElement('div'); b.className = `bub ${mine ? 'me' : 'them'}`;
+    // Mensajes seguidos del mismo autor (menos de 5 min) van pegados
+    if (prev && prev.uid === m.uid && m.ts - prev.ts < 5 * 60e3) b.classList.add('grp');
+    prev = m;
+    if (!firstPaint && !m.old && !shown.has(m.id)) b.classList.add('new');
+    shown.add(m.id);
+    if (m.pending && m.type === 'image') b.classList.add('sending');
     if (m.type === 'sticker' || m.type === 'gif') b.classList.add('stkbub');
     if (m.replyTo) {
       const q = document.createElement('div'); q.className = 'quote';
@@ -1635,8 +1792,11 @@ function renderChat(forceBottom) {
     if (mine) {
       const at = chat.seen[m.id];
       // En los antiguos no sabemos si fue visto (solo se leen los últimos 300 "visto"), así que solo la hora
-      sm.textContent = m.pending ? `${hm(m.ts)} · 🕓 enviando` : at ? `${hm(m.ts)} · ✓✓ Visto ${whenLbl(at)}` : m.old ? hm(m.ts) : `${hm(m.ts)} · ✓ Enviado`;
-      if (at) sm.className = 'seen';
+      if (m.pending) sm.innerHTML = `${hm(m.ts)} ${icon('clock')}<span>enviando</span>`;
+      else if (m.old && !at) sm.textContent = hm(m.ts);
+      else if (m === lastMine && at) { sm.innerHTML = `${hm(m.ts)} ${icon('checks')}<span>Visto ${esc(whenLbl(at))}</span>`; sm.className = 'seen'; }
+      else sm.innerHTML = `${hm(m.ts)} ${icon(at ? 'checks' : 'check')}`;
+      if (!m.pending) sm.setAttribute('aria-label', at ? `Visto ${whenLbl(at)}` : 'Enviado');
     } else sm.textContent = hm(m.ts);
     b.appendChild(sm); list.appendChild(b);
     addSwipe(b, m);
@@ -1704,21 +1864,15 @@ function renderUs() {
   if (!$('usInfo') || !cfg) return;
   renderBanner(); updatePair();
   const me = people[cfg.uid], others = otherPeople();
+  // Días juntos y distancia ya están en el banner: aquí, una tarjeta por persona (tu pareja primero)
   let h = '';
-  const days = daysTogether();
-  if (days != null) h += `<div class="days">💕 <b>${days}</b> días juntos</div>`;
-  if (me && me.lat != null && others[0]) {
-    const d = dist(me, others[0]);
-    h += `<div class="distance">${d < 50 ? '🥰 ¡Están juntos!' : `💗 Están a <b>${fmtDist(d)}</b> de distancia`}</div>`;
-  } else if (!others.length) {
-    h += `<div class="distance">⏳ Esperando a que tu pareja entre con el mismo código…</div>`;
-  }
-  [me && { id: cfg.uid, ...me }, ...others].filter(Boolean).forEach((p) => {
-    h += `<div class="person"><div class="av">${esc(p.avatar || '💗')}</div><div>
-      <b>${esc(p.name)}${p.id === cfg.uid ? ' (tú)' : ''}</b><br>
-      ${p.mood ? `<span>${esc(p.mood)}</span><br>` : ''}
-      ${p.msg ? `<i>“${esc(p.msg)}”</i><br>` : ''}
-      <small>${p.ts ? ago(p.ts) : ''}${p.acc ? ` · ±${p.acc} m` : ''}</small></div></div>`;
+  [...others, me && { id: cfg.uid, ...me }].filter(Boolean).forEach((p) => {
+    const isMe = p.id === cfg.uid, live = p.ts && Date.now() - p.ts < 5 * 60e3;
+    h += `<div class="person ${isMe ? 'me' : ''}"><div class="av">${esc(p.avatar || '💗')}<span class="dot ${live ? 'on' : ''}" aria-label="${live ? 'En línea' : 'Sin señal reciente'}"></span></div><div class="who">
+      <b>${esc(p.name)}${isMe ? ' (tú)' : ''}</b>
+      ${p.mood ? `<span class="mood">${esc(p.mood)}</span>` : ''}
+      ${p.msg ? `<i>“${esc(p.msg)}”</i>` : ''}
+      <small>${p.ts ? ago(p.ts) : 'Sin ubicación todavía'}${p.acc ? ` · ±${p.acc} m` : ''}</small></div></div>`;
   });
   $('usInfo').innerHTML = h;
   document.querySelectorAll('#moods button').forEach((b) => b.classList.toggle('active', !!me && me.mood === b.dataset.mood));
@@ -1731,8 +1885,9 @@ function listenPlaces() {
     renderPlaces(); checkPlaceAlerts(true); // lugar nuevo o borrado: se pone al día sin avisar
   }, () => {});
 }
-function addPlace(lat, lng) {
-  const name = (prompt('¿Cómo se llama este lugar?') || '').trim();
+async function addPlace(lat, lng) {
+  const r = await uiDialog('¿Cómo se llama este lugar?', { ok: 'Guardar', value: '', edit: true, placeholder: 'Ej: Nuestra cafetería' });
+  const name = (typeof r === 'string' ? r : '').trim();
   if (!name) return;
   addDoc(collection(db, 'rooms', cfg.room, 'places'),
     { name: name.slice(0, 40), emoji: $('placeEmoji').value, lat, lng, by: cfg.name, ts: Date.now() }).catch(logErr('guardar lugar'));
@@ -1743,15 +1898,15 @@ function renderPlaces() {
   placesLayer.clearLayers();
   const me = people[cfg.uid];
   const list = $('placesList');
-  list.innerHTML = places.length ? '' : '<p class="muted">Aún no hay lugares. Guarda su casa, su restaurante favorito… 💕</p>';
+  list.innerHTML = places.length ? '' : '<div class="empty"><span class="big">📍</span>Aún no hay lugares.<br>Guarda su casa, su restaurante favorito… 💕</div>';
   places.forEach((p) => {
     L.marker([p.lat, p.lng], { icon: L.divIcon({ className: '', html: `<div class="pl">${esc(p.emoji)}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
       .bindTooltip(p.name).addTo(placesLayer);
     const row = document.createElement('div'); row.className = 'place';
-    row.innerHTML = `<span style="font-size:1.5rem">${esc(p.emoji)}</span><div class="t"><b>${esc(p.name)}</b><br><small>${me && me.lat != null ? fmtDist(dist(me, p)) + ' de ti · ' : ''}por ${esc(p.by)}</small></div>`;
-    [['👁', () => map.flyTo([p.lat, p.lng], 17)], ['🧭', () => navigate(p.lat, p.lng)],
-      ['🗑', () => confirm(`¿Borrar "${p.name}"?`) && deleteDoc(doc(db, 'rooms', cfg.room, 'places', p.id))]]
-      .forEach(([t, fn]) => { const b = document.createElement('button'); b.textContent = t; b.onclick = fn; row.appendChild(b); });
+    row.innerHTML = `<span class="pe">${esc(p.emoji)}</span><div class="t"><b>${esc(p.name)}</b><br><small>${me && me.lat != null ? fmtDist(dist(me, p)) + ' de ti · ' : ''}por ${esc(p.by)}</small></div>`;
+    [['zoom', 'Ver en el mapa', () => map.flyTo([p.lat, p.lng], 17)], ['nav', 'Cómo llegar', () => navigate(p.lat, p.lng)],
+      ['trash', 'Borrar', async () => { if (await uiConfirm(`¿Borrar "${p.name}"?`, 'Borrar')) deleteDoc(doc(db, 'rooms', cfg.room, 'places', p.id)); }]]
+      .forEach(([ic, lbl, fn]) => { const b = document.createElement('button'); b.innerHTML = icon(ic); b.setAttribute('aria-label', lbl); b.onclick = fn; row.appendChild(b); });
     list.appendChild(row);
   });
 }
@@ -2099,7 +2254,7 @@ function renderPlay(force) {
 }
 function setPlaying(on) {
   play.playing = on;
-  $('hpPlay').textContent = on ? '⏸' : '▶';
+  $('hpPlay').innerHTML = icon(on ? 'pause' : 'play');
   cancelAnimationFrame(play.raf);
   if (!on) return;
   if (play.vt >= play.pb.totalVt) play.vt = 0;
@@ -2108,7 +2263,7 @@ function setPlaying(on) {
     if (!play.playing) return;
     play.vt = Math.min(play.pb.totalVt, play.vt + Math.min(100, now - play.last) * play.speed);
     play.last = now;
-    if (play.vt >= play.pb.totalVt) { play.playing = false; $('hpPlay').textContent = '▶'; renderPlay(true); return; }
+    if (play.vt >= play.pb.totalVt) { play.playing = false; $('hpPlay').innerHTML = icon('play'); renderPlay(true); return; }
     renderPlay();
     play.raf = requestAnimationFrame(tick);
   };
@@ -2117,7 +2272,7 @@ function setPlaying(on) {
 function stopPlay() {
   play.playing = false; cancelAnimationFrame(play.raf);
   play.pb = null; play.marker = null; play.done = null; play.vt = 0; play.touched = false;
-  $('histPlayer').classList.add('hidden'); $('hpPlay').textContent = '▶';
+  $('histPlayer').classList.add('hidden'); $('hpPlay').innerHTML = icon('play');
 }
 function initPlayer() {
   $('hpPlay').onclick = () => { if (play.pb) setPlaying(!play.playing); };
