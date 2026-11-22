@@ -1191,7 +1191,7 @@ function setSpeakerUi(on) {
   const b = $('callSpeaker');
   b.classList.toggle('on', on);
   b.setAttribute('aria-pressed', String(on));
-  b.textContent = on ? '🔊 Altavoz' : '🔈 Altavoz';
+  b.textContent = on ? '🔊' : '🔈';
 }
 async function toggleSpeaker() {
   const want = !callSpeakerOn;
@@ -1206,9 +1206,11 @@ async function toggleSpeaker() {
 function showCall(title, status, incoming) {
   $('callTitle').textContent = title;
   $('callStatus').textContent = status;
-  $('callAccept').classList.toggle('hidden', !incoming);
-  $('callSpeaker').classList.toggle('hidden', incoming);
+  $('callAcceptWrap').classList.toggle('hidden', !incoming);
+  $('callSpeakerWrap').classList.toggle('hidden', incoming);
   $('callOverlay').classList.remove('hidden');
+  // Mientras hay llamada se esconde todo lo del mapa (cartel "H y Juan", botones, corazones)
+  document.body.classList.add('in-call');
 }
 function endCallLocal() {
   callUnsubs.forEach((f) => f()); callUnsubs = [];
@@ -1216,6 +1218,7 @@ function endCallLocal() {
   Native.callEnd().catch(logErr('terminar llamada'));
   setSpeakerUi(false);
   $('callOverlay').classList.add('hidden');
+  document.body.classList.remove('in-call');
 }
 function listenCandidates() {
   callUnsubs.push(fsOnSnapshot(callCandCol(), (snap) => {
@@ -1243,7 +1246,7 @@ async function startCall() {
     return;
   }
   listenCandidates();
-  showCall(`Llamando a ${partnerName()}…`, 'Esperando que conteste', false);
+  showCall(partnerName(), 'Llamando…', false);
 }
 async function acceptCall() {
   const id = callIncomingId;
