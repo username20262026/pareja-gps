@@ -246,25 +246,38 @@
 <!-- Cámara estilo WhatsApp: cámara en vivo, fotos recientes abajo y galería al deslizar hacia arriba -->
 <div id="camScreen" class="camscr hidden">
   <video id="camVideo" autoplay playsinline muted></video>
+  <div id="camFx" class="cam-fx"></div>
   <div id="camMsg" class="cam-msg hidden"></div>
-  <button type="button" id="camClose" class="cam-x" aria-label="Cerrar"><i data-icon="x"></i></button>
+  <div class="cam-top">
+    <button type="button" id="camClose" class="cam-ic" aria-label="Cerrar"><i data-icon="x"></i></button>
+    <button type="button" id="camFlash" class="cam-ic hidden" aria-label="Flash" aria-pressed="false"></button>
+  </div>
   <div id="camBottom" class="cam-bottom">
-    <div class="cam-handle" id="camHandle"><span></span><small>Desliza hacia arriba para ver tus fotos</small></div>
+    <div id="camZoom" class="cam-zoom hidden"><button type="button" data-z="1">1×</button><button type="button" data-z="2">2×</button></div>
     <div id="camStrip" class="cam-strip"></div>
     <div class="cam-ctrls">
-      <button type="button" id="camGal" class="cam-side" aria-label="Galería"><i data-icon="image"></i></button>
-      <button type="button" id="camShot" class="cam-shot" aria-label="Sacar foto"></button>
-      <button type="button" id="camFlip" class="cam-side" aria-label="Cambiar cámara"><i data-icon="flip"></i></button>
+      <button type="button" id="camGal" class="cam-gal" aria-label="Galería"><i data-icon="image"></i></button>
+      <button type="button" id="camShot" class="cam-shot" aria-label="Sacar foto"><span></span></button>
+      <button type="button" id="camFlip" class="cam-ic cam-flip" aria-label="Cambiar cámara"><i data-icon="flip"></i></button>
     </div>
+    <button type="button" class="cam-handle" id="camHandle"><i data-icon="chevronUp"></i><small>Galería</small></button>
   </div>
   <div id="camSheet" class="cam-sheet hidden">
-    <div class="cam-sheet-top" id="camSheetTop"><span></span><b>Fotos</b><button type="button" id="camMore">Otras carpetas…</button></div>
+    <div class="cam-sheet-top" id="camSheetTop">
+      <span class="grip"></span>
+      <button type="button" id="camSheetX" class="cam-ic" aria-label="Volver a la cámara"><i data-icon="x"></i></button>
+      <b>Galería</b>
+      <button type="button" id="camMore" class="cam-pill">Otras carpetas</button>
+    </div>
     <div id="camGrid" class="cam-grid"></div>
   </div>
   <div id="camPrev" class="cam-prev hidden">
     <img id="camPrevImg" alt="Foto" />
-    <button type="button" id="camPrevX" class="cam-x" aria-label="Volver"><i data-icon="x"></i></button>
-    <button type="button" id="camSend" class="cam-send" aria-label="Enviar"><i data-icon="send"></i></button>
+    <div class="cam-top"><button type="button" id="camPrevX" class="cam-ic" aria-label="Volver"><i data-icon="x"></i></button></div>
+    <div class="cam-prev-bar">
+      <span class="cam-to">Para <b id="camPrevTo"></b></span>
+      <button type="button" id="camSend" class="cam-send" aria-label="Enviar"><i data-icon="send"></i></button>
+    </div>
   </div>
 </div>
 <div id="lightbox" class="lightbox hidden"><img id="lbImg" alt="Foto" /><button type="button" id="lbClose" aria-label="Cerrar"><i data-icon="x"></i></button></div>
