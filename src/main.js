@@ -1176,7 +1176,7 @@ const MAX_PHOTO = 40 * 1024 * 1024, MAX_DOC = 900 * 1024;
 async function photoDataUrl(blob) {
   const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
   try {
-    for (const [side, q] of [[1600, 0.8], [1280, 0.75], [1024, 0.7], [800, 0.65], [640, 0.6]]) {
+    for (const [side, q] of [[2048, 0.86], [1600, 0.82], [1280, 0.78], [1024, 0.72], [800, 0.65], [640, 0.6]]) {
       const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
       const c = document.createElement('canvas');
       c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
@@ -1216,7 +1216,12 @@ function loadPhoto(uid, mid) {
 }
 
 // ---- Cámara estilo WhatsApp: cámara en vivo, fotos recientes abajo y galería al deslizar hacia arriba ----
-const cam = { stream: null, facing: 'environment', nativeGal: false, galOffset: 0, galDone: false, galBusy: false, prevBlob: null, prevUrl: null };
+// La foto se saca con ImageCapture.takePhoto() (resolución completa del sensor, con flash);
+// si el celular no lo permite, se toma el cuadro del video en la mayor resolución que dé la cámara.
+const cam = {
+  stream: null, track: null, capture: null, facing: 'environment', flash: false, zoom: 1, zoomCap: null,
+  nativeGal: false, galOffset: 0, galDone: false, galBusy: false, prevBlob: null, prevUrl: null, busy: false,
+};
 const camOpen = () => !$('camScreen').classList.contains('hidden');
 const sheetOpen = () => !$('camSheet').classList.contains('hidden');
 const prevOpen = () => !$('camPrev').classList.contains('hidden');
@@ -1225,6 +1230,7 @@ function openCam() {
   $('camScreen').classList.remove('hidden');
   closeCamSheet(); hidePrev();
   $('camGrid').innerHTML = ''; cam.galOffset = 0; cam.galDone = false;
+  $('camPrevTo').textContent = partnerName();
   startCamStream();
   loadRecent();
 }
@@ -1232,16 +1238,33 @@ function closeCam() {
   stopCamStream(); hidePrev(); closeCamSheet();
   $('camScreen').classList.add('hidden');
 }
+async function getCamStream() {
+  // Se pide lo máximo (4:3 como el sensor); si el celular no lo acepta, se baja a Full HD
+  const tries = [
+    { width: { ideal: 4032 }, height: { ideal: 3024 } },
+    { width: { ideal: 1920 }, height: { ideal: 1080 } },
+    {},
+  ];
+  let last;
+  for (const t of tries) {
+    try { return await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing, ...t }, audio: false }); } catch (e) { last = e; }
+  }
+  throw last;
+}
 async function startCamStream() {
   stopCamStream(); camMsg('');
+  $('camVideo').classList.remove('ready');
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('sin getUserMedia');
-    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-    if (!camOpen() || prevOpen()) { s.getTracks().forEach((t) => t.stop()); return; }
-    cam.stream = s;
+    const s = await getCamStream();
+    if (!camOpen() || prevOpen() || sheetOpen()) { s.getTracks().forEach((t) => t.stop()); return; }
+    cam.stream = s; cam.track = s.getVideoTracks()[0];
+    cam.capture = typeof ImageCapture === 'function' ? new ImageCapture(cam.track) : null;
     const v = $('camVideo');
     v.srcObject = s; v.classList.toggle('front', cam.facing === 'user');
+    v.onloadeddata = () => v.classList.add('ready');
     await v.play().catch(() => {});
+    setupCamCaps();
   } catch (e) {
     console.warn('[cam]', e);
     camMsg('No se pudo abrir la cámara aquí (revisa el permiso de Cámara de la app). Toca el botón blanco para usar la cámara del celular.');
@@ -1249,16 +1272,81 @@ async function startCamStream() {
 }
 function stopCamStream() {
   if (cam.stream) cam.stream.getTracks().forEach((t) => t.stop());
-  cam.stream = null; $('camVideo').srcObject = null;
+  cam.stream = null; cam.track = null; cam.capture = null; cam.zoomCap = null;
+  $('camVideo').srcObject = null;
 }
-function shoot() {
+// Flash y zoom solo se muestran si la cámara los tiene
+async function setupCamCaps() {
+  let flashOk = false;
+  const caps = cam.track && cam.track.getCapabilities ? cam.track.getCapabilities() : {};
+  if (cam.capture) {
+    try { const pc = await cam.capture.getPhotoCapabilities(); flashOk = (pc.fillLightMode || []).includes('flash'); } catch { /* sin datos */ }
+  }
+  if (!flashOk && caps.torch) flashOk = true;
+  $('camFlash').classList.toggle('hidden', !flashOk);
+  if (!flashOk) cam.flash = false;
+  flashUi();
+  cam.zoomCap = caps.zoom && caps.zoom.max > caps.zoom.min ? caps.zoom : null;
+  cam.zoom = cam.zoomCap ? Math.max(cam.zoomCap.min, 1) : 1;
+  $('camZoom').classList.toggle('hidden', !cam.zoomCap || cam.zoomCap.max < 2);
+  zoomUi();
+}
+function flashUi() {
+  const b = $('camFlash');
+  b.innerHTML = icon(cam.flash ? 'bolt' : 'boltOff');
+  b.classList.toggle('on', cam.flash);
+  b.setAttribute('aria-pressed', String(cam.flash));
+}
+function setZoom(z) {
+  if (!cam.zoomCap || !cam.track) return;
+  cam.zoom = Math.min(cam.zoomCap.max, Math.max(cam.zoomCap.min, z));
+  cam.track.applyConstraints({ advanced: [{ zoom: cam.zoom }] }).catch(() => {});
+  zoomUi();
+}
+function zoomUi() {
+  const z = cam.zoom;
+  $('camZoom').querySelectorAll('button').forEach((b) => {
+    const v = Number(b.dataset.z);
+    const near = v === 1 ? z < 1.95 : z >= 1.95;
+    b.classList.toggle('on', near);
+    b.textContent = near ? `${(Math.round(z * 10) / 10).toString().replace('.', ',')}×` : `${v}×`;
+  });
+}
+function camFlashFx() {
+  const f = $('camFx');
+  f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
+}
+async function shoot() {
   const v = $('camVideo');
+  if (cam.busy) return;
   if (!cam.stream || !v.videoWidth) { $('camPick').click(); return; }
-  const c = document.createElement('canvas');
-  c.width = v.videoWidth; c.height = v.videoHeight;
-  c.getContext('2d').drawImage(v, 0, 0);
-  navigator.vibrate?.(20);
-  c.toBlob((b) => { if (b) showPrev(b); else toast('No se pudo sacar la foto'); }, 'image/jpeg', 0.9);
+  cam.busy = true;
+  navigator.vibrate?.(15);
+  camFlashFx();
+  let blob = null;
+  try {
+    if (cam.capture) {
+      const opts = {};
+      try {
+        const pc = await cam.capture.getPhotoCapabilities();
+        if (pc.imageWidth && pc.imageWidth.max) { opts.imageWidth = pc.imageWidth.max; }
+        if ((pc.fillLightMode || []).includes(cam.flash ? 'flash' : 'off')) opts.fillLightMode = cam.flash ? 'flash' : 'off';
+      } catch { /* sin capacidades: valores por defecto */ }
+      blob = await cam.capture.takePhoto(opts);
+    }
+  } catch (e) { console.warn('[cam] takePhoto', e); blob = null; }
+  if (!blob) {
+    // Respaldo: cuadro del video (con linterna si pidió flash)
+    if (cam.flash && cam.track) { try { await cam.track.applyConstraints({ advanced: [{ torch: true }] }); await new Promise((r) => setTimeout(r, 350)); } catch { /* sin linterna */ } }
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    const x = c.getContext('2d');
+    x.drawImage(v, 0, 0);
+    blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.95));
+    if (cam.flash && cam.track) cam.track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+  }
+  cam.busy = false;
+  if (blob) showPrev(blob); else toast('No se pudo sacar la foto');
 }
 function showPrev(blob) {
   if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
@@ -1269,7 +1357,7 @@ function showPrev(blob) {
 }
 function hidePrev(restart) {
   $('camPrev').classList.add('hidden');
-  $('camPrevImg').src = '';
+  $('camPrevImg').removeAttribute('src');
   if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
   cam.prevBlob = null; cam.prevUrl = null;
   if (restart && camOpen() && !sheetOpen()) startCamStream();
@@ -1281,23 +1369,29 @@ function sendPrev() {
   uploadPhoto(b);
 }
 // Fotos del celular (método nativo; con un APK viejo no existe y se usa el selector del sistema)
-async function nativePhotos(offset, lim, ask) {
+async function nativePhotos(offset, lim, ask, size) {
   if (!IS_NATIVE) return null;
-  try { return await Native.recentPhotos({ offset, limit: lim, ask }); } catch (e) { console.warn('[cam] fotos', e); return null; }
+  try { return await Native.recentPhotos({ offset, limit: lim, ask, size }); } catch (e) { console.warn('[cam] fotos', e); return null; }
 }
 function thumbEl(it) {
   const im = document.createElement('img');
-  im.src = it.thumb; im.alt = 'Foto'; im.loading = 'lazy';
+  im.alt = 'Foto'; im.loading = 'lazy'; im.decoding = 'async';
+  im.onload = () => im.classList.add('ok');
+  im.src = it.thumb;
   im.onclick = () => pickNative(it.id);
   return im;
 }
 async function loadRecent() {
   const strip = $('camStrip');
   strip.innerHTML = '';
-  const r = await nativePhotos(0, 30, true);
+  const r = await nativePhotos(0, 30, true, 256);
   cam.nativeGal = !!(r && !r.denied);
-  strip.classList.toggle('hidden', !cam.nativeGal || !(r.items || []).length);
-  if (cam.nativeGal) (r.items || []).forEach((it) => strip.appendChild(thumbEl(it)));
+  const items = (cam.nativeGal && r.items) || [];
+  strip.classList.toggle('hidden', !items.length);
+  items.forEach((it) => strip.appendChild(thumbEl(it)));
+  // El botón de galería muestra la última foto, como en la cámara del celular
+  const g = $('camGal');
+  g.innerHTML = items.length ? `<img src="${items[0].thumb}" alt="">` : icon('image');
 }
 async function pickNative(id) {
   try {
@@ -1325,24 +1419,32 @@ function closeCamSheet(restart) {
 async function moreGallery() {
   if (cam.galBusy || cam.galDone) return;
   cam.galBusy = true;
-  const r = await nativePhotos(cam.galOffset, 60, false);
+  const r = await nativePhotos(cam.galOffset, 45, false, 400);
   cam.galBusy = false;
   const items = (r && r.items) || [];
   cam.galOffset += items.length;
-  if (items.length < 60) cam.galDone = true;
+  if (items.length < 45) cam.galDone = true;
   items.forEach((it) => $('camGrid').appendChild(thumbEl(it)));
   if (!cam.galOffset) $('camGrid').innerHTML = '<p>No hay fotos en el celular</p>';
 }
 function initCam() {
   $('btnCam').onclick = openCam;
-  $('camClose').onclick = () => { if (sheetOpen()) closeCamSheet(true); else closeCam(); };
+  $('camClose').onclick = closeCam;
+  $('camSheetX').onclick = () => closeCamSheet(true);
   $('camShot').onclick = shoot;
-  $('camFlip').onclick = () => { cam.facing = cam.facing === 'user' ? 'environment' : 'user'; startCamStream(); };
+  $('camFlash').onclick = () => { cam.flash = !cam.flash; flashUi(); };
+  $('camFlip').onclick = () => {
+    cam.facing = cam.facing === 'user' ? 'environment' : 'user';
+    const b = $('camFlip'); b.classList.remove('spin'); void b.offsetWidth; b.classList.add('spin');
+    startCamStream();
+  };
+  $('camZoom').querySelectorAll('button').forEach((b) => { b.onclick = () => setZoom(Number(b.dataset.z)); });
   $('camGal').onclick = openCamSheet;
+  $('camHandle').onclick = openCamSheet;
   $('camMore').onclick = () => $('filePick').click();
   $('camPrevX').onclick = () => hidePrev(true);
   $('camSend').onclick = sendPrev;
-  $('camGrid').onscroll = () => { const g = $('camGrid'); if (g.scrollTop + g.clientHeight > g.scrollHeight - 300) moreGallery(); };
+  $('camGrid').onscroll = () => { const g = $('camGrid'); if (g.scrollTop + g.clientHeight > g.scrollHeight - 400) moreGallery(); };
   $('camPick').onchange = () => { const f = $('camPick').files[0]; $('camPick').value = ''; if (f) showPrev(f); };
   $('filePick').onchange = () => {
     const fs = [...$('filePick').files]; $('filePick').value = '';
@@ -1351,11 +1453,17 @@ function initCam() {
     closeCam();
     fs.slice(0, 10).forEach((f) => uploadPhoto(f));
   };
+  const scr = $('camScreen');
+  // Pellizcar para hacer zoom
+  let pinch = null;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  scr.addEventListener('touchstart', (e) => { if (e.touches.length === 2 && cam.zoomCap) pinch = { d: dist(e.touches), z: cam.zoom }; }, { passive: true });
+  scr.addEventListener('touchmove', (e) => { if (pinch && e.touches.length === 2) setZoom(pinch.z * (dist(e.touches) / pinch.d)); }, { passive: true });
   // Deslizar hacia arriba abre la galería; hacia abajo (arriba de todo) la cierra
   let y0 = null, x0 = 0;
-  const scr = $('camScreen');
-  scr.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; }, { passive: true });
+  scr.addEventListener('touchstart', (e) => { if (e.touches.length === 1) { y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; } else y0 = null; }, { passive: true });
   scr.addEventListener('touchend', (e) => {
+    if (e.touches.length === 0) pinch = null;
     if (y0 === null) return;
     const t = e.changedTouches[0], dy = t.clientY - y0, dx = t.clientX - x0;
     y0 = null;

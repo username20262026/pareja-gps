@@ -466,6 +466,7 @@ public class ParejaNativePlugin extends Plugin {
     private void loadPhotos(final PluginCall call) {
         final int offset = Math.max(0, call.getInt("offset", 0));
         final int limit = Math.max(1, Math.min(100, call.getInt("limit", 30)));
+        final int size = Math.max(96, Math.min(512, call.getInt("size", 256)));
         new Thread(() -> {
             com.getcapacitor.JSArray items = new com.getcapacitor.JSArray();
             android.content.ContentResolver cr = getContext().getContentResolver();
@@ -489,12 +490,12 @@ public class ParejaNativePlugin extends Plugin {
                     Uri u = android.content.ContentUris.withAppendedId(col, id);
                     android.graphics.Bitmap bm = null;
                     try {
-                        if (Build.VERSION.SDK_INT >= 29) bm = cr.loadThumbnail(u, new android.util.Size(220, 220), null);
+                        if (Build.VERSION.SDK_INT >= 29) bm = cr.loadThumbnail(u, new android.util.Size(size, size), null);
                         else bm = android.provider.MediaStore.Images.Thumbnails.getThumbnail(cr, id, android.provider.MediaStore.Images.Thumbnails.MINI_KIND, null);
                     } catch (Exception ignored) { }
                     if (bm == null) continue;
                     ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    bm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, bo);
+                    bm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, bo);
                     bm.recycle();
                     JSObject it = new JSObject();
                     it.put("id", String.valueOf(id));
