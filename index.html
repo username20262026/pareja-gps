@@ -220,6 +220,14 @@
   </div></div>
   <script type="module" src="/src/main.js"></script>
 <div id="lightbox" class="lightbox hidden"><img id="lbImg" alt="Foto" /><button type="button" id="lbClose" aria-label="Cerrar">✕</button></div>
-<div id="callOverlay" class="callov hidden"><div class="call-box"><div class="call-av">📞</div><h3 id="callTitle"></h3><p id="callStatus"></p><div class="call-btns"><button type="button" id="callSpeaker" class="call-spk hidden" aria-pressed="false">🔈 Altavoz</button><button type="button" id="callAccept" class="call-ok">Contestar</button><button type="button" id="callHangup" class="call-no">Colgar</button></div></div></div>
+<div id="callOverlay" class="callov hidden"><div class="call-box">
+  <div class="call-top"><h3 id="callTitle"></h3><p id="callStatus"></p></div>
+  <div class="call-av">💗</div>
+  <div class="call-btns">
+    <div class="call-act" id="callSpeakerWrap"><button type="button" id="callSpeaker" class="call-round call-spk" aria-pressed="false" aria-label="Altavoz">🔈</button><span>Altavoz</span></div>
+    <div class="call-act" id="callAcceptWrap"><button type="button" id="callAccept" class="call-round call-ok" aria-label="Contestar">📞</button><span>Contestar</span></div>
+    <div class="call-act"><button type="button" id="callHangup" class="call-round call-no" aria-label="Colgar">📞</button><span>Colgar</span></div>
+  </div>
+</div></div>
 </body>
 </html>
