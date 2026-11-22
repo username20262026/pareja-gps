@@ -707,6 +707,19 @@ public class ParejaNativePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void callMute(PluginCall call) {
+        boolean muted = Boolean.TRUE.equals(call.getBoolean("muted", false));
+        try {
+            if (callAudio != null) callAudio.setEnabled(!muted);
+            JSObject r = new JSObject();
+            r.put("muted", callAudio != null && muted);
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject("No se pudo silenciar: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void callStartCall(PluginCall call) {
         if (!has(Manifest.permission.RECORD_AUDIO)) {
             requestPermissionForAlias("mic", call, "callPerm");

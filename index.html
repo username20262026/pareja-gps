@@ -3,18 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#e11d48" />
+  <meta name="color-scheme" content="light dark" />
   <title>Nuestro Mapa 💞</title>
 </head>
 <body>
   <div id="login" class="screen hidden">
     <div class="card">
-      <div class="logo">💞</div>
+      <div class="logo" aria-hidden="true"></div>
       <h1>Nuestro Mapa</h1>
       <p class="sub">Entra con tu cuenta. En todos tus celulares serás la misma persona.</p>
       <label>Correo</label>
       <input id="lgEmail" type="email" autocomplete="email" placeholder="tucorreo@gmail.com" />
       <label>Contraseña</label>
-      <input id="lgPass" type="password" autocomplete="current-password" placeholder="Mínimo 6 caracteres" />
+      <div class="pwd"><input id="lgPass" type="password" autocomplete="current-password" placeholder="Mínimo 6 caracteres" /><button type="button" id="lgEye" class="pwd-eye" aria-label="Mostrar contraseña" aria-pressed="false"><i data-icon="eye"></i></button></div>
       <button id="btnLogin">Entrar 💕</button>
       <button id="btnSignup" class="ghost">Crear cuenta nueva</button>
       <button id="btnReset" class="link">¿Olvidaste tu contraseña?</button>
@@ -24,7 +26,7 @@
 
   <div id="setup" class="screen hidden">
     <div class="card">
-      <div class="logo">💞</div>
+      <div class="logo" aria-hidden="true"></div>
       <h1>Tu perfil</h1>
       <p class="sub" id="setupSub">Solo se pide una vez por cuenta</p>
       <label>Tu nombre</label>
@@ -33,7 +35,7 @@
       <div id="avatars" class="avatars"></div>
       <label>Código de sala (el mismo para los dos)</label>
       <input id="inRoom" placeholder="Ej: x7k2mi93fabc" />
-      <button id="btnGen" class="ghost">🎲 Generar código nuevo</button>
+      <button id="btnGen" class="ghost">Generar código nuevo</button>
       <label>Fecha de aniversario (opcional)</label>
       <input type="date" id="inAnniv" />
       <button id="btnSave">Guardar y entrar 💕</button>
@@ -43,23 +45,23 @@
 
   <div id="app" class="hidden">
     <header>
-      <div><b id="hdrName"></b><small id="hdrSub"></small></div>
-      <div class="hdr-right"><button type="button" id="btnCall" class="hcall" aria-label="Llamar">📞</button><span id="status"></span></div>
+      <div class="hdr-l"><b id="hdrName"></b><small id="hdrSub"></small></div>
+      <div class="hdr-right"><span id="status" class="status hidden" role="status"></span><button type="button" id="btnCall" class="hcall" aria-label="Llamar"><i data-icon="phone"></i></button></div>
     </header>
 
     <div id="mapWrap">
       <div id="map"></div>
       <div id="frame"></div>
       <div class="fab">
-        <button id="btnLayer" title="Cambiar tipo de mapa">🛰️</button>
-        <button id="btnCenter" title="Ver a los dos">🎯</button>
-        <button id="btnHeart" title="Enviar un corazón">💗</button>
+        <button id="btnLayer" title="Cambiar tipo de mapa" aria-label="Cambiar tipo de mapa"><i data-icon="layers"></i></button>
+        <button id="btnCenter" title="Ver a los dos" aria-label="Ver a los dos"><i data-icon="locate"></i></button>
+        <button id="btnHeart" class="fab-heart" title="Enviar un corazón" aria-label="Enviar un corazón"><i data-icon="heart"></i></button>
       </div>
       <div id="histPlayer" class="hplayer hidden">
-        <button id="hpPlay" aria-label="Reproducir o pausar">▶</button>
+        <button id="hpPlay" aria-label="Reproducir o pausar"><i data-icon="play"></i></button>
         <input type="range" id="hpSeek" min="0" max="1000" value="0" aria-label="Avance del recorrido" />
         <button id="hpSpeed" class="ghost" aria-label="Velocidad">×30</button>
-        <button id="hpFollow" class="ghost active" aria-label="Seguir al marcador">🎯</button>
+        <button id="hpFollow" class="ghost active" aria-label="Seguir al marcador"><i data-icon="locate"></i></button>
       </div>
       <div id="toast" class="toast hidden"></div>
       <div id="hearts"></div>
@@ -73,22 +75,23 @@
         <div id="tab-us" class="tab">
           <div id="usInfo"></div>
           <h3>¿Cómo te sientes?</h3>
-          <div id="moods" class="chips"></div>
-          <div class="row">
+          <div id="moods" class="chips scroll"></div>
+          <h3>Mensajito en su pantalla</h3>
+          <div class="inbox">
             <input id="inMsg" maxlength="80" placeholder="Un mensajito para mi amor 💌" />
-            <button id="btnMsg">Enviar</button>
+            <button id="btnMsg" class="round" aria-label="Enviar mensajito"><i data-icon="send"></i></button>
           </div>
           <div class="row">
-            <button id="btnGo">🧭 Ir hacia mi amor</button>
-            <button id="btnHeart2" class="ghost">💗 Enviar corazón</button>
+            <button id="btnGo"><i data-icon="nav"></i> Ir hacia mi amor</button>
+            <button id="btnHeart2" class="tonal"><i data-icon="heart"></i> Enviar corazón</button>
           </div>
         </div>
 
         <div id="tab-chat" class="tab hidden">
           <div id="chatList" class="chatlist"></div>
-          <div id="replyBar" class="replybar hidden"><span id="replyTxt"></span><button type="button" id="replyX" aria-label="Cancelar respuesta">✕</button></div>
+          <div id="replyBar" class="replybar hidden"><span id="replyTxt"></span><button type="button" id="replyX" aria-label="Cancelar respuesta"><i data-icon="x"></i></button></div>
           <div id="chatPanel" class="chatpanel hidden">
-            <div class="ptabs"><button type="button" data-pt="emoji" class="active">😊 Emojis</button><button type="button" data-pt="sticker">🧸 Stickers</button><button type="button" data-pt="gif">GIF</button><button type="button" id="panelClose" class="pclose" aria-label="Cerrar">✕</button></div>
+            <div class="ptabs"><button type="button" data-pt="emoji" class="active">😊 Emojis</button><button type="button" data-pt="sticker">🧸 Stickers</button><button type="button" data-pt="gif">GIF</button><button type="button" id="panelClose" class="pclose" aria-label="Cerrar"><i data-icon="x"></i></button></div>
             <div id="emojiGrid" class="pgrid"></div>
             <div id="stickerGrid" class="sgrid hidden"></div>
             <div id="gifBox" class="hidden">
@@ -100,13 +103,15 @@
           <input id="filePick" type="file" accept="image/*" multiple hidden />
           <input id="camPick" type="file" accept="image/*" capture="environment" hidden />
           <div id="msgMenu" class="msgmenu hidden"><div class="mm-box"><p id="menuTxt"></p><button type="button" id="menuDel" class="mm-del"></button><button type="button" id="menuClose" class="mm-cancel">Cerrar</button></div></div>
-          <div id="recBar" class="recbar hidden"><span>🔴 Grabando <b id="recTime">0:00</b></span><button type="button" id="recCancel">Cancelar</button></div>
+          <div id="recBar" class="recbar hidden"><span><i class="recdot"></i>Grabando <b id="recTime">0:00</b></span><button type="button" id="recCancel">Cancelar</button></div>
           <div class="chatbar">
-            <button type="button" id="btnEmoji" class="icb" aria-label="Emojis">😊</button>
-            <input id="inChat" maxlength="500" autocomplete="off" placeholder="Escribe un mensaje 💬" />
-            <button type="button" id="btnCam" class="icb" aria-label="Cámara y fotos">📷</button>
-            <button type="button" id="btnRec" class="icb" aria-label="Grabar audio">🎤</button>
-            <button id="btnChat" aria-label="Enviar">➤</button>
+            <div class="pill">
+              <button type="button" id="btnEmoji" class="icb" aria-label="Emojis"><i data-icon="smile"></i></button>
+              <input id="inChat" maxlength="500" autocomplete="off" placeholder="Mensaje" />
+              <button type="button" id="btnCam" class="icb" aria-label="Cámara y fotos"><i data-icon="camera"></i></button>
+            </div>
+            <button type="button" id="btnRec" class="sendfab" aria-label="Grabar audio"><i data-icon="mic"></i></button>
+            <button id="btnChat" class="sendfab hidden" aria-label="Enviar"><i data-icon="send"></i></button>
           </div>
         </div>
         <div id="tab-places" class="tab hidden">
@@ -116,9 +121,9 @@
               <option>🏠</option><option>💼</option><option>🍽️</option><option>❤️</option>
               <option>⭐</option><option>🎬</option><option>🏖️</option><option>🛍️</option>
             </select>
-            <button id="btnPlaceHere">📍 Guardar donde estoy</button>
+            <button id="btnPlaceHere"><i data-icon="pin"></i> Guardar donde estoy</button>
           </div>
-          <button id="btnPlaceMap" class="ghost">🗺️ Marcar tocando el mapa</button>
+          <button id="btnPlaceMap" class="ghost">Marcar tocando el mapa</button>
           <button id="btnPlaceAlerts" class="ghost"></button>
           <div id="placesList"></div>
         </div>
@@ -135,88 +140,106 @@
         </div>
 
         <div id="tab-set" class="tab hidden">
-          <h3>Tipo de mapa</h3>
-          <div class="chips" id="styleChips">
-            <button data-style="calle">🗺️ Calles</button>
-            <button data-style="satelite">🛰️ Satélite</button>
-            <button data-style="google">🌍 Google</button>
-            <button data-style="mapbox">🌐 Mapbox</button>
-            <button data-style="oscuro">🌙 Oscuro</button>
+          <div class="group">
+            <h3>Mapa</h3>
+            <label class="lbl">Tipo de mapa</label>
+            <div class="chips" id="styleChips">
+              <button data-style="calle">Calles</button>
+              <button data-style="satelite">Satélite</button>
+              <button data-style="google">Google</button>
+              <button data-style="mapbox">Mapbox</button>
+              <button data-style="oscuro">Oscuro</button>
+            </div>
+            <label class="lbl">Marco del mapa</label>
+            <div class="chips" id="frameChips">
+              <button data-frame="none">Sin marco</button>
+              <button data-frame="hearts">💗 Corazones</button>
+              <button data-frame="polaroid">Polaroid</button>
+              <button data-frame="gold">Dorado</button>
+            </div>
+            <button id="btnLine" class="ghost"></button>
           </div>
-          <h3>Marco del mapa</h3>
-          <div class="chips" id="frameChips">
-            <button data-frame="hearts">💗 Corazones</button>
-            <button data-frame="polaroid">📷 Polaroid</button>
-            <button data-frame="gold">✨ Dorado</button>
-            <button data-frame="none">Sin marco</button>
+          <div class="group">
+            <h3>Ubicación</h3>
+            <button id="btnShare"></button>
           </div>
-          <h3>Google Maps</h3>
-          <p class="muted" id="gStatus"></p>
-          <div class="row"><input id="inGKey" autocomplete="off" placeholder="Pega tu clave de API de Google" /><button id="btnGKey">Guardar</button></div>
-          <h3>Mapbox</h3>
-          <p class="muted" id="mStatus"></p>
-          <div class="row"><input id="inMKey" autocomplete="off" placeholder="Pega tu clave pública de Mapbox (pk.…)" /><button id="btnMKey">Guardar</button></div>
-          <h3>En el mapa</h3>
-          <button id="btnLine" class="ghost">📏 Línea de distancia: sí</button>
-          <h3>Ubicación</h3>
-          <button id="btnShare">⏸ Pausar compartir ubicación</button>
-          <h3>Aniversario</h3>
-          <div class="row"><input type="date" id="inAnniv2" /><button id="btnAnniv">Guardar</button></div>
+          <div class="group">
+            <h3>Aniversario</h3>
+            <div class="row"><input type="date" id="inAnniv2" /><button id="btnAnniv">Guardar</button></div>
+          </div>
           <div id="nativeBox">
-            <h3>Permisos del celular</h3>
-            <button id="btnPerms">🔐 Revisar y conceder permisos</button>
-            <button id="btnAuto" class="ghost">🔋 Inicio automático (según tu marca)</button>
-            <button id="btnWidget" class="ghost">📌 Agregar widget a la pantalla de inicio</button>
-            <h3>Widgets · tema</h3>
-            <div class="chips" id="wThemeChips">
-              <button data-t="0">🌸 Rosa</button>
-              <button data-t="1">🌇 Atardecer</button>
-              <button data-t="2">🌊 Océano</button>
-              <button data-t="3">💜 Lavanda</button>
-              <button data-t="4">🌙 Noche</button>
+            <div class="group">
+              <h3>Permisos del celular</h3>
+              <button id="btnPerms">Revisar y conceder permisos</button>
+              <button id="btnAuto" class="ghost">Inicio automático (según tu marca)</button>
             </div>
-            <h3>Widgets · marco</h3>
-            <div class="chips" id="wFrameChips">
-              <button data-f="0">Doble</button>
-              <button data-f="1">Puntos</button>
-              <button data-f="2">♥ Corazones</button>
-              <button data-f="3">Liso</button>
+            <div class="group">
+              <h3>Widgets</h3>
+              <button id="btnWidget" class="ghost">Agregar widget a la pantalla de inicio</button>
+              <label class="lbl">Tema</label>
+              <div class="chips" id="wThemeChips">
+                <button data-t="0">🌸 Rosa</button>
+                <button data-t="1">🌇 Atardecer</button>
+                <button data-t="2">🌊 Océano</button>
+                <button data-t="3">💜 Lavanda</button>
+                <button data-t="4">🌙 Noche</button>
+              </div>
+              <label class="lbl">Marco</label>
+              <div class="chips" id="wFrameChips">
+                <button data-f="0">Doble</button>
+                <button data-f="1">Puntos</button>
+                <button data-f="2">♥ Corazones</button>
+                <button data-f="3">Liso</button>
+              </div>
+              <div class="chips"><button id="btnWMap">Mapa en el widget</button></div>
+              <div class="row"><input id="inWLabel" maxlength="24" autocomplete="off" placeholder="Mensaje (ej. Mi amor 💕)" /><button id="btnWLabel">Guardar</button></div>
             </div>
-            <div class="chips"><button id="btnWMap">🗺️ Mapa en el widget</button></div>
-            <div class="row"><input id="inWLabel" maxlength="24" autocomplete="off" placeholder="Mensaje (ej. Mi amor 💕)" /><button id="btnWLabel">Guardar</button></div>
-            <h3>Actualizaciones</h3>
-            <p class="muted" id="verInfo"></p>
-            <button id="btnUpd" class="ghost">🔄 Buscar actualización</button>
+            <div class="group">
+              <h3>Actualizaciones</h3>
+              <p class="muted" id="verInfo"></p>
+              <button id="btnUpd" class="ghost">Buscar actualización</button>
+            </div>
           </div>
-          <h3>Cuenta</h3>
-          <p class="muted" id="accInfo"></p>
-          <div class="row"><button id="btnCopy" class="ghost">📋 Copiar código</button><button id="btnRoom" class="ghost">Cambiar sala</button></div>
-          <button id="btnLogout" class="danger">Cerrar sesión</button>
+          <div class="group">
+            <h3>Cuenta</h3>
+            <p class="muted" id="accInfo"></p>
+            <div class="row"><button id="btnCopy" class="ghost">Copiar código</button><button id="btnRoom" class="ghost">Cambiar sala</button></div>
+            <button id="btnLogout" class="danger">Cerrar sesión</button>
+          </div>
+          <details class="group adv">
+            <summary>Avanzado: claves de mapas</summary>
+            <h3>Google Maps</h3>
+            <p class="muted" id="gStatus"></p>
+            <div class="row"><input id="inGKey" autocomplete="off" placeholder="Pega tu clave de API de Google" /><button id="btnGKey">Guardar</button></div>
+            <h3>Mapbox</h3>
+            <p class="muted" id="mStatus"></p>
+            <div class="row"><input id="inMKey" autocomplete="off" placeholder="Pega tu clave pública de Mapbox (pk.…)" /><button id="btnMKey">Guardar</button></div>
+          </details>
         </div>
       </div>
       <nav id="nav">
-        <button data-tab="us" class="active"><span>💞</span>Nosotros</button>
-        <button data-tab="chat"><span>💬</span>Chat<i id="chatBadge" class="badge hidden">0</i></button>
-        <button data-tab="places"><span>📍</span>Lugares</button>
-        <button data-tab="hist"><span>🕒</span>Recorrido</button>
-        <button data-tab="set"><span>⚙️</span>Ajustes</button>
+        <button data-tab="us" class="active"><span class="ind"><i data-icon="heart"></i></span>Nosotros</button>
+        <button data-tab="chat"><span class="ind"><i data-icon="chat"></i><i id="chatBadge" class="badge hidden">0</i></span>Chat</button>
+        <button data-tab="places"><span class="ind"><i data-icon="pin"></i></span>Lugares</button>
+        <button data-tab="hist"><span class="ind"><i data-icon="route"></i></span>Recorrido</button>
+        <button data-tab="set"><span class="ind"><i data-icon="settings"></i></span>Ajustes</button>
       </nav>
     </section>
   </div>
   <div id="permModal" class="modal hidden"><div class="modalcard">
-    <h2>🔐 Permisos para cuidarnos</h2>
+    <h2>Permisos para cuidarnos</h2>
     <p class="muted">Pulsa "Conceder todo" y ve aceptando lo que Android te pida.</p>
     <div id="permList"></div>
-    <button id="btnPermAll">✨ Conceder todo</button>
-    <button id="btnPermSettings" class="ghost">⚙️ Abrir ajustes de la app</button>
+    <button id="btnPermAll">Conceder todo</button>
+    <button id="btnPermSettings" class="ghost">Abrir ajustes de la app</button>
     <button id="btnPermClose" class="link">Ahora no</button>
   </div></div>
   <div id="updModal" class="modal hidden"><div class="modalcard">
-    <h2>🔄 Actualización disponible</h2>
+    <h2>Actualización disponible</h2>
     <p id="updInfo"></p>
     <div class="bar"><div id="updBar"></div></div>
     <p class="muted" id="updState"></p>
-    <button id="btnUpdNow">⬇️ Descargar e instalar</button>
+    <button id="btnUpdNow">Descargar e instalar</button>
     <button id="btnUpdLater" class="link">Más tarde</button>
   </div></div>
   <script type="module" src="/src/main.js"></script>
@@ -224,14 +247,14 @@
 <div id="camScreen" class="camscr hidden">
   <video id="camVideo" autoplay playsinline muted></video>
   <div id="camMsg" class="cam-msg hidden"></div>
-  <button type="button" id="camClose" class="cam-x" aria-label="Cerrar">✕</button>
+  <button type="button" id="camClose" class="cam-x" aria-label="Cerrar"><i data-icon="x"></i></button>
   <div id="camBottom" class="cam-bottom">
     <div class="cam-handle" id="camHandle"><span></span><small>Desliza hacia arriba para ver tus fotos</small></div>
     <div id="camStrip" class="cam-strip"></div>
     <div class="cam-ctrls">
-      <button type="button" id="camGal" class="cam-side" aria-label="Galería">🖼️</button>
+      <button type="button" id="camGal" class="cam-side" aria-label="Galería"><i data-icon="image"></i></button>
       <button type="button" id="camShot" class="cam-shot" aria-label="Sacar foto"></button>
-      <button type="button" id="camFlip" class="cam-side" aria-label="Cambiar cámara">🔄</button>
+      <button type="button" id="camFlip" class="cam-side" aria-label="Cambiar cámara"><i data-icon="flip"></i></button>
     </div>
   </div>
   <div id="camSheet" class="cam-sheet hidden">
@@ -240,19 +263,26 @@
   </div>
   <div id="camPrev" class="cam-prev hidden">
     <img id="camPrevImg" alt="Foto" />
-    <button type="button" id="camPrevX" class="cam-x" aria-label="Volver">✕</button>
-    <button type="button" id="camSend" class="cam-send" aria-label="Enviar">➤</button>
+    <button type="button" id="camPrevX" class="cam-x" aria-label="Volver"><i data-icon="x"></i></button>
+    <button type="button" id="camSend" class="cam-send" aria-label="Enviar"><i data-icon="send"></i></button>
   </div>
 </div>
-<div id="lightbox" class="lightbox hidden"><img id="lbImg" alt="Foto" /><button type="button" id="lbClose" aria-label="Cerrar">✕</button></div>
+<div id="lightbox" class="lightbox hidden"><img id="lbImg" alt="Foto" /><button type="button" id="lbClose" aria-label="Cerrar"><i data-icon="x"></i></button></div>
 <div id="callOverlay" class="callov hidden"><div class="call-box">
   <div class="call-top"><h3 id="callTitle"></h3><p id="callStatus"></p></div>
-  <div class="call-av">💗</div>
+  <div class="call-avw"><span class="ring"></span><span class="ring r2"></span><div class="call-av" id="callAv">💗</div></div>
   <div class="call-btns">
-    <div class="call-act" id="callSpeakerWrap"><button type="button" id="callSpeaker" class="call-round call-spk" aria-pressed="false" aria-label="Altavoz">🔈</button><span>Altavoz</span></div>
-    <div class="call-act" id="callAcceptWrap"><button type="button" id="callAccept" class="call-round call-ok" aria-label="Contestar">📞</button><span>Contestar</span></div>
-    <div class="call-act"><button type="button" id="callHangup" class="call-round call-no" aria-label="Colgar">📞</button><span>Colgar</span></div>
+    <div class="call-act" id="callSpeakerWrap"><button type="button" id="callSpeaker" class="call-round call-spk" aria-pressed="false" aria-label="Altavoz"><i data-icon="volume"></i></button><span>Altavoz</span></div>
+    <div class="call-act" id="callMuteWrap"><button type="button" id="callMute" class="call-round call-spk" aria-pressed="false" aria-label="Silenciar micrófono"><i data-icon="micOff"></i></button><span>Silenciar</span></div>
+    <div class="call-act" id="callAcceptWrap"><button type="button" id="callAccept" class="call-round call-ok" aria-label="Contestar"><i data-icon="phone"></i></button><span>Contestar</span></div>
+    <div class="call-act"><button type="button" id="callHangup" class="call-round call-no" aria-label="Colgar"><i data-icon="hangup"></i></button><span>Colgar</span></div>
   </div>
+</div></div>
+<div id="uiDlg" class="msgmenu hidden" role="dialog" aria-modal="true"><div class="mm-box">
+  <p id="uiDlgTxt" class="dlg-txt"></p>
+  <input id="uiDlgIn" class="hidden" readonly />
+  <button type="button" id="uiDlgOk" class="mm-del"></button>
+  <button type="button" id="uiDlgNo" class="mm-cancel">Cancelar</button>
 </div></div>
 </body>
 </html>
