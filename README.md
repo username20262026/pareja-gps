@@ -9,10 +9,6 @@
 2. Agregar app **Web** (</>) → copia el objeto `firebaseConfig` en `src/firebase.js`.
 3. Build → Authentication → Comenzar → habilita **Anónimo**.
 4. Build → Firestore Database → Crear (modo producción) → pestaña Reglas → pega `firestore.rules` → Publicar.
-5. Build → **Storage** → Comenzar (fotos del chat; pide el plan Blaze, que tiene 5 GB gratis) →
-   pestaña Reglas → pega `storage.rules` → Publicar. Las reglas leen `rooms/<sala>.members` de Firestore:
-   si la consola pide dar permiso a Storage para leer Firestore, acéptalo.
-   (O desde la terminal: `firebase deploy --only storage`.)
 
 ## 2. Instalar dependencias
 ```

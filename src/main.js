@@ -11,8 +11,7 @@ import {
   doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, deleteField,
   arrayUnion, arrayRemove, startAfter
 } from 'firebase/firestore';
-import { ref as sRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { auth, db, storage } from './firebase.js';
+import { auth, db } from './firebase.js';
 
 const BG = registerPlugin('BackgroundGeolocation');
 const Native = registerPlugin('ParejaNative');
@@ -1041,7 +1040,7 @@ function cancelRec() {
   }
   if (!recorder) return; recCancel = true; recorder.stop();
 }
-// ---- Fotos del chat: se guardan en Firebase Storage (ya no hace falta la laptop encendida) ----
+// ---- Fotos del chat: se guardan en Firestore, igual que los audios (gratis, sin laptop ni facturación) ----
 // Las fotos viejas (con "fid") siguen viniendo del servidor propio, solo para verlas.
 const mediaCache = new Map(), mediaPending = new Map(), mediaFailed = new Map();
 const FILE_BASE = 'https://pareja-mia.duckdns.org';
@@ -1061,45 +1060,49 @@ async function srvFetch(path, opts = {}) {
   if (!r.ok) throw new Error('Error ' + r.status);
   return r;
 }
-const MAX_SIDE = 1600, MAX_PHOTO = 40 * 1024 * 1024;
-// Achica la foto (las de la cámara pesan 4-8 MB) a 1600 px como máximo: sube rápido y ocupa poco
-async function shrinkImage(blob) {
-  if (blob.type === 'image/gif') return blob;
-  let bmp;
-  try { bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' }); } catch { return blob; }
-  const k = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
-  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-  bmp.close?.();
-  const out = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.82));
-  return out && (out.size < blob.size || k < 1) ? out : blob;
-}
-function storageErr(e) {
-  const c = (e && e.code) || '';
-  if (!navigator.onLine || c === 'storage/retry-limit-exceeded') return 'Sin internet: no se pudo enviar la foto';
-  if (c === 'storage/unauthorized') return 'No se pudo enviar: faltan publicar las reglas de Storage en Firebase';
-  if (c === 'storage/bucket-not-found' || c === 'storage/project-not-found' || c === 'storage/unknown') return 'No se pudo enviar: activa Storage en la consola de Firebase';
-  return 'No se pudo enviar la foto' + (e && e.message ? ': ' + e.message : '');
+const MAX_PHOTO = 40 * 1024 * 1024, MAX_DOC = 900 * 1024;
+// Cada foto va en su propio documento (rooms/<sala>/users/<uid>/media/<id>) para que el chat siga liviano.
+// Un documento de Firestore admite hasta 1 MB, así que la foto se achica hasta entrar (~150-300 KB normalmente).
+async function photoDataUrl(blob) {
+  const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  try {
+    for (const [side, q] of [[1600, 0.8], [1280, 0.75], [1024, 0.7], [800, 0.65], [640, 0.6]]) {
+      const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const url = c.toDataURL('image/jpeg', q);
+      if (url.length < MAX_DOC) return url;
+    }
+  } finally { bmp.close?.(); }
+  throw new Error('la foto es demasiado grande');
 }
 async function uploadPhoto(blob) {
   if (!blob) return;
   if (blob.type && !blob.type.startsWith('image/')) return toast('Solo se pueden enviar fotos');
   if (blob.size > MAX_PHOTO) return toast('La foto es demasiado grande');
   toast('Enviando foto…');
-  try {
-    const img = await shrinkImage(blob);
-    const type = img.type || 'image/jpeg';
-    const ext = { 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' }[type] || 'jpg';
-    const spath = `rooms/${cfg.room}/media/${cfg.uid}/${Date.now()}${Math.random().toString(36).slice(2, 6)}.${ext}`;
-    const r = sRef(storage, spath);
-    await uploadBytes(r, img, { contentType: type });
-    const url = await getDownloadURL(r);
-    sendMsg({ type: 'image', url, spath, text: '📷 Foto' });
-  } catch (e) {
-    console.warn('[foto] subir', e);
-    toast(storageErr(e));
+  let data;
+  try { data = await photoDataUrl(blob); } catch (e) { console.warn('[foto] achicar', e); return toast('No se pudo leer esa foto'); }
+  // Sin internet, Firestore guarda las dos escrituras y las envía en orden al volver la conexión
+  const mid = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+  photoCache.set(`${cfg.uid}/${mid}`, Promise.resolve(data));
+  setDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'media', mid), { data, ts: Date.now() })
+    .catch((e) => { console.warn('[foto] subir', e); toast('No se pudo enviar la foto'); });
+  sendMsg({ type: 'image', mid, text: '📷 Foto' });
+}
+const photoCache = new Map();
+function loadPhoto(uid, mid) {
+  const k = `${uid}/${mid}`;
+  if (!photoCache.has(k)) {
+    const p = getDoc(doc(db, 'rooms', cfg.room, 'users', uid, 'media', mid)).then((s) => {
+      if (!s.exists() || !s.data().data) throw new Error('no existe');
+      return s.data().data;
+    });
+    p.catch(() => setTimeout(() => photoCache.delete(k), 30000));
+    photoCache.set(k, p);
   }
+  return photoCache.get(k);
 }
 
 // ---- Cámara estilo WhatsApp: cámara en vivo, fotos recientes abajo y galería al deslizar hacia arriba ----
@@ -1290,7 +1293,12 @@ window.__handleBack = () => {
   return false;
 };
 function mediaBubble(b, m) {
-  if (m.type === 'image' && m.url) {
+  if (m.type === 'image' && m.mid) {
+    const im = document.createElement('img'); im.className = 'mimg'; im.alt = 'Foto';
+    loadPhoto(m.uid, m.mid).then((u) => { im.src = u; im.onclick = () => openLightbox(u); })
+      .catch(() => { const s = document.createElement('small'); s.textContent = '📷 Foto no disponible'; im.replaceWith(s); });
+    b.appendChild(im);
+  } else if (m.type === 'image' && m.url) {
     const im = document.createElement('img'); im.className = 'mimg'; im.alt = 'Foto'; im.loading = 'lazy';
     im.src = m.url; im.onclick = () => openLightbox(m.url);
     im.onerror = () => { const s = document.createElement('small'); s.textContent = '📷 Foto no disponible'; im.replaceWith(s); };
@@ -1340,7 +1348,7 @@ async function deleteMine() {
   const m = menuMsg; closeMsgMenu();
   if (!m) return;
   try {
-    if (m.spath) deleteObject(sRef(storage, m.spath)).catch(logErr('borrar foto'));
+    if (m.mid) deleteDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'media', m.mid)).catch(logErr('borrar foto'));
     if (m.fid) { try { await srvFetch(`/f/${m.fid}`, { method: 'DELETE' }); } catch (e) { logErr('borrar archivo servidor')(e); } }
     chat.deleted.add(m.id);
     await deleteDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'chat', m.id));
@@ -1618,7 +1626,7 @@ function renderChat(forceBottom) {
       const im = document.createElement('img'); im.className = 'stkimg'; im.alt = 'Sticker'; im.src = stickerUrl(m.sid); b.appendChild(im);
     } else if (m.type === 'gif' && m.url) {
       const im = document.createElement('img'); im.className = 'gifimg'; im.alt = 'GIF'; im.loading = 'lazy'; im.src = m.url; b.appendChild(im);
-    } else if ((m.type === 'image' || m.type === 'file') && (m.fid || m.url)) {
+    } else if ((m.type === 'image' || m.type === 'file') && (m.fid || m.url || m.mid)) {
       mediaBubble(b, m);
     } else {
       const t = document.createElement('span'); t.textContent = m.text; b.appendChild(t);

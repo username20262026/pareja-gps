@@ -1,7 +1,6 @@
 ﻿import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyB1XWhWuqLffxxKHdkBT45TR8ASfYU1nwA',
@@ -15,5 +14,3 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-// Fotos del chat (reglas en storage.rules)
-export const storage = getStorage(app);
