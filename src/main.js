@@ -1174,27 +1174,70 @@ async function srvFetch(path, opts = {}) {
 const MAX_PHOTO = 40 * 1024 * 1024, MAX_DOC = 900 * 1024;
 // Cada foto va en su propio documento (rooms/<sala>/users/<uid>/media/<id>) para que el chat siga liviano.
 // Un documento de Firestore admite hasta 1 MB, así que la foto se achica hasta entrar (~150-300 KB normalmente).
-async function photoDataUrl(blob) {
+// Achicar en pasos de a la mitad con suavizado "high" (en un solo paso y con el suavizado por defecto
+// la foto queda pixelada y con dientes de sierra, que es lo que la hacía ver "de cámara vieja").
+function downscale(src, w, h) {
+  let cw = src.width, ch = src.height, cur = src;
+  while (cw / 2 >= w && ch / 2 >= h) {
+    cw = Math.round(cw / 2); ch = Math.round(ch / 2);
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    const x = c.getContext('2d'); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    x.drawImage(cur, 0, 0, cw, ch); cur = c;
+  }
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(cur, 0, 0, w, h);
+  return c;
+}
+// Retoque suave para fotos sacadas con la cámara de la app, como hacen Instagram/WhatsApp:
+// un poco más de contraste y color, y enfoque (máscara de enfoque) para recuperar nitidez.
+function enhancePhoto(c) {
+  const w = c.width, h = c.height;
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  const x = out.getContext('2d');
+  if ('filter' in x) x.filter = 'contrast(1.04) saturate(1.08)';
+  x.drawImage(c, 0, 0);
+  if ('filter' in x) x.filter = 'none';
+  // Máscara de enfoque: original + 0.45 × (original − desenfocado)
+  const blur = document.createElement('canvas'); blur.width = w; blur.height = h;
+  const bx = blur.getContext('2d');
+  if (!('filter' in bx)) return out;
+  bx.filter = `blur(${Math.max(1, Math.round(Math.max(w, h) / 1400))}px)`;
+  bx.drawImage(out, 0, 0);
+  const o = x.getImageData(0, 0, w, h), bl = bx.getImageData(0, 0, w, h).data, d = o.data;
+  const amt = 0.45, th = 3; // th: no realzar el ruido de zonas lisas
+  for (let i = 0; i < d.length; i += 4) {
+    for (let j = i; j < i + 3; j++) {
+      const diff = d[j] - bl[j];
+      if (diff > th || diff < -th) d[j] = d[j] + diff * amt; // Uint8Clamped recorta solo
+    }
+  }
+  x.putImageData(o, 0, 0);
+  return out;
+}
+async function photoDataUrl(blob, enhance) {
   const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
   try {
-    for (const [side, q] of [[2048, 0.86], [1600, 0.82], [1280, 0.78], [1024, 0.72], [800, 0.65], [640, 0.6]]) {
-      const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
-      const c = document.createElement('canvas');
-      c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
-      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    let c = null, cSide = 0;
+    for (const [side, q] of [[2048, 0.9], [2048, 0.84], [1600, 0.82], [1280, 0.78], [1024, 0.72], [800, 0.65], [640, 0.6]]) {
+      if (side !== cSide) {
+        const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+        c = downscale(bmp, Math.round(bmp.width * k), Math.round(bmp.height * k)); cSide = side;
+        if (enhance) { try { c = enhancePhoto(c); } catch (e) { console.warn('[foto] retoque', e); } }
+      }
       const url = c.toDataURL('image/jpeg', q);
       if (url.length < MAX_DOC) return url;
     }
   } finally { bmp.close?.(); }
   throw new Error('la foto es demasiado grande');
 }
-async function uploadPhoto(blob) {
+async function uploadPhoto(blob, { enhance = false, data: ready = null } = {}) {
   if (!blob) return;
   if (blob.type && !blob.type.startsWith('image/')) return toast('Solo se pueden enviar fotos');
   if (blob.size > MAX_PHOTO) return toast('La foto es demasiado grande');
   toast('Enviando foto…');
   let data;
-  try { data = await photoDataUrl(blob); } catch (e) { console.warn('[foto] achicar', e); return toast('No se pudo leer esa foto'); }
+  try { data = ready || await photoDataUrl(blob, enhance); } catch (e) { console.warn('[foto] achicar', e); return toast('No se pudo leer esa foto'); }
   // Sin internet, Firestore guarda las dos escrituras y las envía en orden al volver la conexión
   const mid = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
   photoCache.set(`${cfg.uid}/${mid}`, Promise.resolve(data));
@@ -1239,18 +1282,59 @@ function closeCam() {
   stopCamStream(); hidePrev(); closeCamSheet();
   $('camScreen').classList.add('hidden');
 }
-async function getCamStream() {
-  // Se pide lo máximo (4:3 como el sensor); si el celular no lo acepta, se baja a Full HD
-  const tries = [
-    { width: { ideal: 4032 }, height: { ideal: 3024 } },
-    { width: { ideal: 1920 }, height: { ideal: 1080 } },
-    {},
-  ];
+// En Android cada lente es una cámara aparte ("camera2 0, facing back", "camera2 2, facing back"...).
+// Al pedir solo facingMode, Chrome puede elegir la gran angular (0.5×). La principal es siempre la de
+// número más bajo de cada lado (0 = trasera principal, 1 = frontal), así que se elige esa a propósito.
+const CAM_RES = [
+  // Vista previa nítida (la foto sale aparte a resolución completa con takePhoto)
+  { width: { ideal: 2560 }, height: { ideal: 1920 }, frameRate: { ideal: 30 } },
+  { width: { ideal: 1920 }, height: { ideal: 1440 }, frameRate: { ideal: 30 } },
+  { width: { ideal: 1920 }, height: { ideal: 1080 } },
+  {},
+];
+function camFacingOf(d) {
+  const l = (d.label || '').toLowerCase();
+  if (/facing back|back|rear|trasera|environment/.test(l)) return 'environment';
+  if (/facing front|front|frontal|user|selfie/.test(l)) return 'user';
+  return '';
+}
+function camNum(d) { const m = /camera2?\s*(\d+)/i.exec(d.label || ''); return m ? Number(m[1]) : 99; }
+async function mainCamId(facing) {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput' && d.label);
+    const side = devs.filter((d) => camFacingOf(d) === facing);
+    if (!side.length) return null;
+    side.sort((a, b) => camNum(a) - camNum(b));
+    return side[0].deviceId || null;
+  } catch { return null; }
+}
+async function openCamWith(video) {
   let last;
-  for (const t of tries) {
-    try { return await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing, ...t }, audio: false }); } catch (e) { last = e; }
+  for (const t of CAM_RES) {
+    try { return await navigator.mediaDevices.getUserMedia({ video: { ...video, ...t }, audio: false }); } catch (e) { last = e; }
   }
   throw last;
+}
+async function getCamStream() {
+  const key = 'camMain_' + cam.facing;
+  const saved = localStorage.getItem(key);
+  if (saved) {
+    try { return await openCamWith({ deviceId: { exact: saved } }); } catch { localStorage.removeItem(key); }
+  }
+  // Primera vez: se abre por facingMode (así aparecen los nombres de las cámaras) y luego se pasa a la principal
+  const s = await openCamWith({ facingMode: cam.facing });
+  const id = await mainCamId(cam.facing);
+  const cur = s.getVideoTracks()[0]?.getSettings?.().deviceId;
+  if (!id || id === cur) { if (cur && id) localStorage.setItem(key, cur); return s; }
+  s.getTracks().forEach((t) => t.stop());
+  try {
+    const s2 = await openCamWith({ deviceId: { exact: id } });
+    localStorage.setItem(key, id);
+    return s2;
+  } catch (e) {
+    console.warn('[cam] principal', e);
+    return openCamWith({ facingMode: cam.facing });
+  }
 }
 async function startCamStream() {
   stopCamStream(); camMsg('');
@@ -1265,11 +1349,47 @@ async function startCamStream() {
     v.srcObject = s; v.classList.toggle('front', cam.facing === 'user');
     v.onloadeddata = () => v.classList.add('ready');
     await v.play().catch(() => {});
+    autoCam();
     setupCamCaps();
   } catch (e) {
     console.warn('[cam]', e);
     camMsg('No se pudo abrir la cámara aquí (revisa el permiso de Cámara de la app). Toca el botón blanco para usar la cámara del celular.');
   }
+}
+// Enfoque, exposición y balance de blancos automáticos y continuos (lo que hacen las cámaras de las redes sociales)
+function autoCam() {
+  const t = cam.track;
+  const caps = t && t.getCapabilities ? t.getCapabilities() : {};
+  const a = {};
+  for (const k of ['focusMode', 'exposureMode', 'whiteBalanceMode']) {
+    if ((caps[k] || []).includes('continuous')) a[k] = 'continuous';
+  }
+  if (caps.exposureCompensation) a.exposureCompensation = Math.min(caps.exposureCompensation.max, Math.max(caps.exposureCompensation.min, 0));
+  if (Object.keys(a).length) t.applyConstraints({ advanced: [a] }).catch((e) => console.warn('[cam] auto', e));
+}
+// Tocar la pantalla enfoca y mide la luz en ese punto
+let focusTimer = 0;
+function tapFocus(x, y) {
+  const t = cam.track;
+  if (!t || !t.getCapabilities) return;
+  const caps = t.getCapabilities();
+  const v = $('camVideo'), r = v.getBoundingClientRect();
+  // Pasar del punto en pantalla al punto en el video (que está recortado con object-fit: cover)
+  const vw = v.videoWidth || r.width, vh = v.videoHeight || r.height;
+  const k = Math.max(r.width / vw, r.height / vh);
+  let px = ((x - r.left) - (r.width - vw * k) / 2) / (vw * k);
+  const py = ((y - r.top) - (r.height - vh * k) / 2) / (vh * k);
+  if (cam.facing === 'user') px = 1 - px;
+  const a = { pointsOfInterest: [{ x: Math.min(1, Math.max(0, px)), y: Math.min(1, Math.max(0, py)) }] };
+  if ((caps.focusMode || []).includes('single-shot')) a.focusMode = 'single-shot';
+  if ((caps.exposureMode || []).includes('single-shot')) a.exposureMode = 'single-shot';
+  t.applyConstraints({ advanced: [a] }).catch(() => {});
+  const ring = $('camFocus');
+  ring.style.left = `${x}px`; ring.style.top = `${y}px`;
+  ring.classList.remove('go'); void ring.offsetWidth; ring.classList.add('go');
+  // Después de unos segundos vuelve al automático continuo
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => { if (cam.track === t) autoCam(); }, 4000);
 }
 function stopCamStream() {
   if (cam.stream) cam.stream.getTracks().forEach((t) => t.stop());
@@ -1289,6 +1409,8 @@ async function setupCamCaps() {
   flashUi();
   cam.zoomCap = caps.zoom && caps.zoom.max > caps.zoom.min ? caps.zoom : null;
   cam.zoom = cam.zoomCap ? Math.max(cam.zoomCap.min, 1) : 1;
+  // Se arranca siempre en 1× (algunos celulares abren la principal alejada)
+  if (cam.zoomCap) cam.track.applyConstraints({ advanced: [{ zoom: cam.zoom }] }).catch(() => {});
   $('camZoom').classList.toggle('hidden', !cam.zoomCap || cam.zoomCap.max < 2);
   zoomUi();
 }
@@ -1330,7 +1452,10 @@ async function shoot() {
       const opts = {};
       try {
         const pc = await cam.capture.getPhotoCapabilities();
-        if (pc.imageWidth && pc.imageWidth.max) { opts.imageWidth = pc.imageWidth.max; }
+        // Resolución completa del sensor (ancho y alto juntos para que no se recorte)
+        if (pc.imageWidth && pc.imageWidth.max) opts.imageWidth = pc.imageWidth.max;
+        if (pc.imageHeight && pc.imageHeight.max) opts.imageHeight = pc.imageHeight.max;
+        if (pc.redEyeReduction === 'controllable') opts.redEyeReduction = false;
         if ((pc.fillLightMode || []).includes(cam.flash ? 'flash' : 'off')) opts.fillLightMode = cam.flash ? 'flash' : 'off';
       } catch { /* sin capacidades: valores por defecto */ }
       blob = await cam.capture.takePhoto(opts);
@@ -1347,12 +1472,20 @@ async function shoot() {
     if (cam.flash && cam.track) cam.track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
   }
   cam.busy = false;
-  if (blob) showPrev(blob); else toast('No se pudo sacar la foto');
+  if (blob) showPrev(blob, true); else toast('No se pudo sacar la foto');
 }
-function showPrev(blob) {
+function showPrev(blob, fromCam) {
   if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
+  cam.prevFromCam = !!fromCam; cam.prevData = null;
   cam.prevBlob = blob; cam.prevUrl = URL.createObjectURL(blob);
   $('camPrevImg').src = cam.prevUrl;
+  // La vista previa muestra la foto ya retocada, tal como se va a enviar
+  if (fromCam) {
+    photoDataUrl(blob, true).then((u) => {
+      if (cam.prevBlob !== blob) return;
+      cam.prevData = u; $('camPrevImg').src = u;
+    }).catch((e) => console.warn('[foto] retoque', e));
+  }
   $('camPrev').classList.remove('hidden');
   stopCamStream();
 }
@@ -1360,14 +1493,15 @@ function hidePrev(restart) {
   $('camPrev').classList.add('hidden');
   $('camPrevImg').removeAttribute('src');
   if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
-  cam.prevBlob = null; cam.prevUrl = null;
+  cam.prevBlob = null; cam.prevUrl = null; cam.prevData = null;
   if (restart && camOpen() && !sheetOpen()) startCamStream();
 }
 function sendPrev() {
   const b = cam.prevBlob;
   if (!b) return;
+  const enhance = cam.prevFromCam, data = cam.prevData;
   closeCam();
-  uploadPhoto(b);
+  uploadPhoto(b, { enhance, data });
 }
 // Fotos del celular (método nativo; con un APK viejo no existe y se usa el selector del sistema)
 async function nativePhotos(offset, lim, ask, size) {
@@ -1433,6 +1567,7 @@ function initCam() {
   $('camClose').onclick = closeCam;
   $('camSheetX').onclick = () => closeCamSheet(true);
   $('camShot').onclick = shoot;
+  $('camVideo').onclick = (e) => tapFocus(e.clientX, e.clientY);
   $('camFlash').onclick = () => { cam.flash = !cam.flash; flashUi(); };
   $('camFlip').onclick = () => {
     cam.facing = cam.facing === 'user' ? 'environment' : 'user';
