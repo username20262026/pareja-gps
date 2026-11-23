@@ -1,9 +1,11 @@
-# Solo hace falta si publicas el Worker desde la computadora con:  npx wrangler deploy
+# publicar.ps1 usa este archivo para subir el Worker solo (npx wrangler deploy).
 # (también se puede crear todo desde el panel de Cloudflare; ver README.md de esta carpeta)
 name = "pareja-push"
 main = "push-worker.js"
 compatibility_date = "2026-11-01"
 workers_dev = true
+# No borrar las variables que se hayan puesto a mano en el panel de Cloudflare
+keep_vars = true
 
 routes = [
   { pattern = "push.nnxsw-proyect.date", custom_domain = true }

@@ -14,3 +14,4 @@ android/app/google-services.json
 service-account*.json
 *-firebase-adminsdk-*.json
 .wrangler/
+worker/.ultimo-deploy

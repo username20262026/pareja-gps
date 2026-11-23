@@ -36,6 +36,15 @@ Prueba: abre https://push.nnxsw-proyect.date/ en el navegador. Debe decir
 La dirección está en `src/main.js` (`PUSH_URL`). Compila la versión nueva con `publicar.ps1`
 e instálala en **los dos** celulares. Ábrela una vez en cada uno (así guarda su token).
 
+## Actualizar el Worker
+No hace falta entrar al panel: `publicar.ps1` sube `push-worker.js` a Cloudflare al final, solo si
+cambió. La primera vez se abre el navegador para iniciar sesión en Cloudflare (toca **Allow**); después
+ya queda guardado. Para subir solo el Worker, sin compilar el APK:
+```
+powershell -ExecutionPolicy Bypass -File .\publicar.ps1 -SoloWorker
+```
+El secreto `SERVICE_ACCOUNT` y el dominio se mantienen; no hay que volver a cargarlos.
+
 ## Desde la computadora (opcional, en vez de los pasos 2 a 4)
 ```
 cd worker
