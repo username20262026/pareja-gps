@@ -20,6 +20,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Cámara nativa del chat (cámara principal + procesamiento del celular) -->
+        <activity
+            android:name=".ParejaCamActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

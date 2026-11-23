@@ -10,7 +10,7 @@ import {
 } from 'firebase/auth';
 import {
   doc, getDoc, collection, writeBatch, setDoc, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, deleteField,
-  arrayUnion, arrayRemove, startAfter
+  arrayUnion, arrayRemove, startAfter, Bytes
 } from 'firebase/firestore';
 import { auth, db } from './firebase.js';
 
@@ -1231,26 +1231,84 @@ async function photoDataUrl(blob, enhance) {
   } finally { bmp.close?.(); }
   throw new Error('la foto es demasiado grande');
 }
-async function uploadPhoto(blob, { enhance = false, data: ready = null } = {}) {
+// Resolución completa (como "HD" de WhatsApp): la foto entera va partida en trozos de <900 KB
+// en rooms/<sala>/users/<uid>/media/<id>/hd/<n>. El documento principal guarda una versión
+// liviana para el chat (y para APKs viejos), y el visor carga la completa al abrirla.
+const HD_SIDE = 4096, HD_CHUNK = 900 * 1024, HD_MAX = 9 * 1024 * 1024;
+let sendHd = localStorage.getItem('photoHd') !== 'off';
+async function fullJpeg(blob, { enhance = false, processed = false } = {}) {
+  const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  try {
+    const big = Math.max(bmp.width, bmp.height);
+    // Foto ya procesada por la cámara del celular, en JPEG y de tamaño razonable: se manda tal cual (sin perder nada)
+    if ((processed || !enhance) && big <= HD_SIDE && /jpe?g/i.test(blob.type || 'image/jpeg') && blob.size <= HD_MAX) {
+      return { blob, w: bmp.width, h: bmp.height };
+    }
+    const k = Math.min(1, HD_SIDE / big);
+    let c = downscale(bmp, Math.round(bmp.width * k), Math.round(bmp.height * k));
+    if (enhance) { try { c = enhancePhoto(c); } catch (e) { console.warn('[foto] retoque HD', e); } }
+    for (const q of [0.93, 0.88, 0.82]) {
+      const out = await new Promise((r) => c.toBlob(r, 'image/jpeg', q));
+      if (out && out.size <= HD_MAX) return { blob: out, w: c.width, h: c.height };
+    }
+    return null;
+  } finally { bmp.close?.(); }
+}
+async function uploadHd(mid, blob, opts) {
+  const f = await fullJpeg(blob, opts);
+  if (!f) return;
+  const bytes = new Uint8Array(await f.blob.arrayBuffer());
+  const n = Math.ceil(bytes.length / HD_CHUNK);
+  const base = ['rooms', cfg.room, 'users', cfg.uid, 'media', mid];
+  for (let i = 0; i < n; i++) {
+    await setDoc(doc(db, ...base, 'hd', String(i)), { b: Bytes.fromUint8Array(bytes.subarray(i * HD_CHUNK, (i + 1) * HD_CHUNK)) });
+  }
+  // Recién cuando están todos los trozos se marca la foto como HD
+  await setDoc(doc(db, ...base), { hd: n, w: f.w, h: f.h }, { merge: true });
+  hdCache.set(`${cfg.uid}/${mid}`, Promise.resolve(URL.createObjectURL(f.blob)));
+}
+async function uploadPhoto(blob, { enhance = false, processed = false, data: ready = null } = {}) {
   if (!blob) return;
   if (blob.type && !blob.type.startsWith('image/')) return toast('Solo se pueden enviar fotos');
   if (blob.size > MAX_PHOTO) return toast('La foto es demasiado grande');
   toast('Enviando foto…');
   let data;
-  try { data = ready || await photoDataUrl(blob, enhance); } catch (e) { console.warn('[foto] achicar', e); return toast('No se pudo leer esa foto'); }
-  // Sin internet, Firestore guarda las dos escrituras y las envía en orden al volver la conexión
+  try { data = ready || await photoDataUrl(blob, enhance && !processed); } catch (e) { console.warn('[foto] achicar', e); return toast('No se pudo leer esa foto'); }
+  // Sin internet, Firestore guarda las escrituras y las envía en orden al volver la conexión
   const mid = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
   photoCache.set(`${cfg.uid}/${mid}`, Promise.resolve(data));
   setDoc(doc(db, 'rooms', cfg.room, 'users', cfg.uid, 'media', mid), { data, ts: Date.now() })
+    .then(() => (sendHd ? uploadHd(mid, blob, { enhance: enhance && !processed, processed }) : null))
     .catch((e) => { console.warn('[foto] subir', e); toast('No se pudo enviar la foto'); });
   sendMsg({ type: 'image', mid, text: '📷 Foto' });
 }
-const photoCache = new Map();
+const photoCache = new Map(), photoHd = new Map(), hdCache = new Map();
+// Foto a resolución completa (si se mandó en HD); si no está, null
+async function loadHd(uid, mid) {
+  const k = `${uid}/${mid}`;
+  if (hdCache.has(k)) return hdCache.get(k);
+  let n = photoHd.get(k);
+  if (!n) {
+    const s = await getDoc(doc(db, 'rooms', cfg.room, 'users', uid, 'media', mid)).catch(() => null);
+    n = s && s.exists() ? s.data().hd : 0;
+    if (!n) return null;
+    photoHd.set(k, n);
+  }
+  const p = Promise.all(Array.from({ length: n }, (_, i) => getDoc(doc(db, 'rooms', cfg.room, 'users', uid, 'media', mid, 'hd', String(i)))))
+    .then((ds) => {
+      const parts = ds.map((d) => { if (!d.exists()) throw new Error('falta un trozo'); return d.data().b.toUint8Array(); });
+      return URL.createObjectURL(new Blob(parts, { type: 'image/jpeg' }));
+    });
+  p.catch(() => hdCache.delete(k));
+  hdCache.set(k, p);
+  return p;
+}
 function loadPhoto(uid, mid) {
   const k = `${uid}/${mid}`;
   if (!photoCache.has(k)) {
     const p = getDoc(doc(db, 'rooms', cfg.room, 'users', uid, 'media', mid)).then((s) => {
       if (!s.exists() || !s.data().data) throw new Error('no existe');
+      if (s.data().hd) photoHd.set(k, s.data().hd);
       return s.data().data;
     });
     p.catch(() => setTimeout(() => photoCache.delete(k), 30000));
@@ -1270,7 +1328,52 @@ const camOpen = () => !$('camScreen').classList.contains('hidden');
 const sheetOpen = () => !$('camSheet').classList.contains('hidden');
 const prevOpen = () => !$('camPrev').classList.contains('hidden');
 function camMsg(t) { $('camMsg').textContent = t; $('camMsg').classList.toggle('hidden', !t); }
+// Cámara nativa (APK nuevo): usa la cámara principal con el procesamiento del propio celular.
+// Con un APK viejo el método no existe y se usa la cámara web de abajo.
+let nativeCamOk = IS_NATIVE;
+async function nativeCam() {
+  cam.native = true;
+  let r;
+  try { r = await Native.camera(); } catch (e) {
+    cam.native = false;
+    if (e && e.code === 'UNIMPLEMENTED') { nativeCamOk = false; openCam(); return; }
+    console.warn('[cam] nativa', e);
+    toast(e?.message || 'No se pudo abrir la cámara');
+    return;
+  }
+  if (r.action === 'photo' && r.path) {
+    try {
+      const res = await fetch(Capacitor.convertFileSrc(r.path));
+      const b = await res.blob();
+      camShell();
+      showPrev(b.type ? b : new Blob([b], { type: 'image/jpeg' }), false, true);
+    } catch (e) { logErr('foto de la cámara')(e); toast('No se pudo leer la foto'); cam.native = false; }
+  } else if (r.action === 'gallery') {
+    camShell();
+    loadRecent().then(() => openCamSheet());
+  } else cam.native = false;
+}
+// Pantalla de cámara sin el video (para la vista previa y la galería de la cámara nativa)
+function camShell() {
+  $('camScreen').classList.remove('hidden');
+  closeCamSheet(); hidePrev();
+  $('camGrid').innerHTML = ''; cam.galOffset = 0; cam.galDone = false;
+  $('camPrevTo').textContent = partnerName();
+  hdUi();
+}
+function startCamera() { if (nativeCamOk) nativeCam(); else openCam(); }
+// Volver a la cámara desde la vista previa o la galería
+function backToCam() {
+  if (cam.native) { closeCam(); nativeCam(); } else if (camOpen() && !prevOpen() && !sheetOpen()) startCamStream();
+}
+function hdUi() {
+  const b = $('camHd');
+  b.classList.toggle('on', sendHd);
+  b.setAttribute('aria-pressed', String(sendHd));
+}
 function openCam() {
+  cam.native = false;
+  hdUi();
   $('camScreen').classList.remove('hidden');
   closeCamSheet(); hidePrev();
   $('camGrid').innerHTML = ''; cam.galOffset = 0; cam.galDone = false;
@@ -1280,6 +1383,7 @@ function openCam() {
 }
 function closeCam() {
   stopCamStream(); hidePrev(); closeCamSheet();
+  cam.native = false;
   $('camScreen').classList.add('hidden');
 }
 // En Android cada lente es una cámara aparte ("camera2 0, facing back", "camera2 2, facing back"...).
@@ -1441,6 +1545,7 @@ function camFlashFx() {
 }
 async function shoot() {
   const v = $('camVideo');
+  if (cam.native) { closeCam(); nativeCam(); return; }
   if (cam.busy) return;
   if (!cam.stream || !v.videoWidth) { $('camPick').click(); return; }
   cam.busy = true;
@@ -1474,9 +1579,9 @@ async function shoot() {
   cam.busy = false;
   if (blob) showPrev(blob, true); else toast('No se pudo sacar la foto');
 }
-function showPrev(blob, fromCam) {
+function showPrev(blob, fromCam, processed) {
   if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
-  cam.prevFromCam = !!fromCam; cam.prevData = null;
+  cam.prevFromCam = !!fromCam; cam.prevData = null; cam.prevProcessed = !!processed;
   cam.prevBlob = blob; cam.prevUrl = URL.createObjectURL(blob);
   $('camPrevImg').src = cam.prevUrl;
   // La vista previa muestra la foto ya retocada, tal como se va a enviar
@@ -1494,14 +1599,14 @@ function hidePrev(restart) {
   $('camPrevImg').removeAttribute('src');
   if (cam.prevUrl) URL.revokeObjectURL(cam.prevUrl);
   cam.prevBlob = null; cam.prevUrl = null; cam.prevData = null;
-  if (restart && camOpen() && !sheetOpen()) startCamStream();
+  if (restart && camOpen() && !sheetOpen()) backToCam();
 }
 function sendPrev() {
   const b = cam.prevBlob;
   if (!b) return;
-  const enhance = cam.prevFromCam, data = cam.prevData;
+  const enhance = cam.prevFromCam, data = cam.prevData, processed = cam.prevProcessed;
   closeCam();
-  uploadPhoto(b, { enhance, data });
+  uploadPhoto(b, { enhance, data, processed });
 }
 // Fotos del celular (método nativo; con un APK viejo no existe y se usa el selector del sistema)
 async function nativePhotos(offset, lim, ask, size) {
@@ -1549,7 +1654,7 @@ function openCamSheet() {
 function closeCamSheet(restart) {
   if (!sheetOpen()) return;
   $('camSheet').classList.add('hidden');
-  if (restart && camOpen() && !prevOpen()) startCamStream();
+  if (restart && camOpen() && !prevOpen()) backToCam();
 }
 async function moreGallery() {
   if (cam.galBusy || cam.galDone) return;
@@ -1563,7 +1668,8 @@ async function moreGallery() {
   if (!cam.galOffset) $('camGrid').innerHTML = '<p>No hay fotos en el celular</p>';
 }
 function initCam() {
-  $('btnCam').onclick = openCam;
+  $('btnCam').onclick = startCamera;
+  $('camHd').onclick = () => { sendHd = !sendHd; localStorage.setItem('photoHd', sendHd ? 'on' : 'off'); hdUi(); toast(sendHd ? 'Fotos en resolución completa' : 'Fotos livianas (gastan menos espacio)'); };
   $('camClose').onclick = closeCam;
   $('camSheetX').onclick = () => closeCamSheet(true);
   $('camShot').onclick = shoot;
@@ -1609,7 +1715,7 @@ function initCam() {
   }, { passive: true });
   // La cámara se apaga si la app pasa a segundo plano
   document.addEventListener('visibilitychange', () => {
-    if (!camOpen()) return;
+    if (!camOpen() || cam.native) return;
     if (document.hidden) stopCamStream();
     else if (!prevOpen() && !sheetOpen()) startCamStream();
   });
@@ -1626,11 +1732,18 @@ function loadBlob(fid) {
   return p;
 }
 // Visor de fotos dentro de la app (no abre otra aplicación)
-function openLightbox(u) {
+function openLightbox(u, hd) {
   const img = $('lbImg');
   img.style.setProperty('--ox', `${lastTap.x}px`); img.style.setProperty('--oy', `${lastTap.y}px`);
   img.src = u;
   $('lightbox').classList.remove('hidden', 'leaving');
+  // Se muestra enseguida la versión liviana y, si existe, se cambia por la de resolución completa
+  if (hd) {
+    $('lightbox').classList.add('loading-hd');
+    hd().then((full) => { if (full && img.src === u) img.src = full; })
+      .catch((e) => console.warn('[foto] HD', e))
+      .finally(() => $('lightbox').classList.remove('loading-hd'));
+  }
 }
 function closeLightbox() {
   hideAnim($('lightbox'), 240).then(() => { if ($('lightbox').classList.contains('hidden')) $('lbImg').src = ''; });
@@ -1651,7 +1764,7 @@ window.__handleBack = () => {
 function mediaBubble(b, m) {
   if (m.type === 'image' && m.mid) {
     const im = document.createElement('img'); im.className = 'mimg'; im.alt = 'Foto';
-    loadPhoto(m.uid, m.mid).then((u) => { im.src = u; im.onclick = () => openLightbox(u); })
+    loadPhoto(m.uid, m.mid).then((u) => { im.src = u; im.onclick = () => openLightbox(u, () => loadHd(m.uid, m.mid)); })
       .catch(() => { const s = document.createElement('small'); s.textContent = '📷 Foto no disponible'; im.replaceWith(s); });
     b.appendChild(im);
   } else if (m.type === 'image' && m.url) {
