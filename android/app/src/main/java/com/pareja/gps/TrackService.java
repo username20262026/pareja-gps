@@ -78,6 +78,10 @@ public class TrackService extends Service {
     private boolean started = false;
     private int tick = 0;
     private boolean synced = false;
+    // "En vivo": tu pareja tiene la app abierta mirando el mapa -> puntos mas seguidos (ver setLive)
+    private static final long LIVE_WINDOW_MS = 90000L;
+    private volatile boolean live = false;
+    private String prov = LocationManager.GPS_PROVIDER;
 
     private final Runnable notifLoop = new Runnable() {
         @Override
@@ -211,7 +215,7 @@ public class TrackService extends Service {
     private void startUpdates() {
         lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         if (lm == null) return;
-        String prov = LocationManager.GPS_PROVIDER;
+        prov = LocationManager.GPS_PROVIDER;
         try {
             if (Build.VERSION.SDK_INT >= 31 && lm.getAllProviders().contains("fused")) prov = "fused";
         } catch (Exception ignored) {
@@ -284,7 +288,11 @@ public class TrackService extends Service {
                     long dt = ts - keptTs;
                     float[] r = new float[1];
                     Location.distanceBetween(keptLat, keptLng, lat, lng, r);
-                    boolean keep = (r[0] >= 6f && dt >= 1500L) || dt >= KEEPALIVE_MS;
+                    // en vivo: cada ~1 s si se movio 3 m (o mas si la lectura es imprecisa, para no
+                    // "temblar" quieto); normal: cada 1,5 s si se movio 6 m
+                    boolean keep;
+                    if (live) keep = (r[0] >= Math.max(3f, acc * 0.5f) && dt >= 900L) || dt >= KEEPALIVE_MS;
+                    else keep = (r[0] >= 6f && dt >= 1500L) || dt >= KEEPALIVE_MS;
                     if (!keep) return;
                 }
                 haveKept = true;
@@ -629,12 +637,26 @@ public class TrackService extends Service {
         ParejaAvisos.notifyUser(this, id, title, text);
     }
 
-    /** Siempre desde el hilo "io". Solo avisa si la app NO esta abierta. */
+    /** Cambia la frecuencia del GPS: 1 s / 1 m en vivo, 2 s / 4 m normal. Se llama desde cualquier hilo. */
+    private void setLive(final boolean on) {
+        if (on == live) return;
+        live = on;
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                if (lm == null || moveListener == null) return;
+                try {
+                    lm.removeUpdates(moveListener);
+                    lm.requestLocationUpdates(prov, on ? 1000L : 2000L, on ? 1f : 4f, moveListener, Looper.getMainLooper());
+                } catch (Exception ignored) {
+                }
+            }
+        });
+    }
+
+    /** Siempre desde el hilo "io". Solo avisa si la app NO esta abierta (pero siempre mira si tu pareja esta en vivo). */
     private void pollNotifs() throws Exception {
-        if (appVisible) {
-            synced = false; // lo que pase con la app abierta ya lo vio la persona
-            return;
-        }
+        if (appVisible) synced = false; // lo que pase con la app abierta ya lo vio la persona
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
         String uid = sp.getString("uid", "");
         String room = sp.getString("room", "");
@@ -666,6 +688,7 @@ public class TrackService extends Service {
         long pTs = 0L;
         boolean pHasLoc = false;
         long pPlv = 0L;
+        long pWatch = 0L;
         JSONObject pPlaceEv = null;
         for (int i = 0; i < docs.length(); i++) {
             JSONObject doc = docs.getJSONObject(i);
@@ -686,10 +709,15 @@ public class TrackService extends Service {
             pLng = numD(f, "lng");
             pTs = numL(f, "ts");
             pPlv = numL(f, "plv");
+            pWatch = numL(f, "watchTs");
             JSONObject pe = f.optJSONObject("placeEv");
             pPlaceEv = pe == null || pe.optJSONObject("mapValue") == null ? null
                 : pe.getJSONObject("mapValue").optJSONObject("fields");
         }
+        // tu pareja esta mirando el mapa ahora (su app avisa cada 45 s con watchTs)
+        long age = System.currentTimeMillis() - pWatch;
+        setLive(pWatch > 0 && age >= -60000L && age < LIVE_WINDOW_MS);
+        if (appVisible) return;
         if (pUid.length() == 0) return;
         if (name.length() == 0) name = "Tu amor";
 

@@ -260,6 +260,7 @@ async function startApp() {
   await joinRoom();
   if (cfg.anniv) setDoc(doc(db, 'rooms', cfg.room, 'meta', 'couple'), { anniv: cfg.anniv }, { merge: true }).catch(logErr('guardar aniversario'));
   listenPeople(); listenPlaces(); listenMeta(); listenChat();
+  startWatching();
   lastKept = queue[queue.length - 1] || null;
   maybeStartTracking(); initNative(); startCallWatcher(); registerPush();
   window.addEventListener('online', flush);
@@ -410,27 +411,54 @@ const pinIcon = (avatar, name, isMe) => L.divIcon({
   html: `<div class="pin ${isMe ? 'me' : ''}"><div class="face" data-e="${esc(avatar || '💗')}"></div><em>${esc(name)}</em></div>`
 });
 function drawPerson(id, data, isMe) {
-  people[id] = { ...people[id], ...data };
+  const prev = people[id];
+  // Un punto más viejo que el que ya se dibuja (p. ej. tu propio punto que vuelve de Firebase
+  // después de leerlo directo del GPS) no hace retroceder el marcador
+  if (prev && prev.ts && data.ts && data.ts < prev.ts) {
+    data = { ...data }; delete data.lat; delete data.lng; delete data.acc; delete data.ts;
+  }
+  people[id] = { ...prev, ...data };
   const d = people[id];
   if (d.lat == null) return;
-  const icon = pinIcon(d.avatar, d.name, isMe);
-  if (!markers[id]) markers[id] = L.marker([d.lat, d.lng], { icon, zIndexOffset: isMe ? 0 : 500 }).addTo(map);
-  else { markers[id].setIcon(icon); glide(markers[id], [d.lat, d.lng]); }
+  const key = `${d.avatar}|${d.name}`;
+  if (!markers[id]) {
+    markers[id] = L.marker([d.lat, d.lng], { icon: pinIcon(d.avatar, d.name, isMe), zIndexOffset: isMe ? 0 : 500 }).addTo(map);
+    markers[id]._key = key; markers[id]._fixTs = d.ts;
+  } else {
+    // Rehacer el ícono en cada punto reinicia el dibujo del marcador: solo si cambió la cara o el nombre
+    if (markers[id]._key !== key) { markers[id].setIcon(pinIcon(d.avatar, d.name, isMe)); markers[id]._key = key; }
+    glide(markers[id], [d.lat, d.lng], d.ts);
+  }
   updatePair();
 }
-// Desliza el marcador hasta su nueva posición en vez de saltar (saltos grandes: directo)
-function glide(mk, to) {
-  const from = mk.getLatLng();
-  cancelAnimationFrame(mk._glide);
+// Movimiento en vivo: el marcador avanza a velocidad constante hacia el punto nuevo y tarda
+// lo mismo que tardó en llegar ese punto, así enlaza con el siguiente sin frenar ni saltar.
+// Va ~1 punto por detrás de la realidad (1-2 s), a cambio de verse continuo.
+function glide(mk, to, ts) {
+  const from = mk.getLatLng(), now = performance.now();
+  if (mk._to && ts === mk._fixTs && mk._to[0] === to[0] && mk._to[1] === to[1]) return; // mismo punto (cambió otra cosa)
+  cancelAnimationFrame(mk._glide); mk._to = to;
+  // Tiempo desde el punto anterior: mejor con la hora del GPS; si no, con la hora de llegada
+  const gap = ts && mk._fixTs && ts > mk._fixTs ? ts - mk._fixTs : now - (mk._fixAt || 0);
+  mk._fixTs = ts; mk._fixAt = now;
   const far = map.distance(from, to) > 3000;
-  if (far || reduceMotion() || document.visibilityState !== 'visible') { mk.setLatLng(to); return; }
-  const t0 = performance.now(), dur = 900;
+  if (far || reduceMotion() || document.visibilityState !== 'visible') { mk.setLatLng(to); movePair(); return; }
+  const dur = Math.max(500, Math.min(4000, gap || 1000)), t0 = now;
   const step = (t) => {
-    const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
-    mk.setLatLng([from.lat + (to[0] - from.lat) * e, from.lng + (to[1] - from.lng) * e]);
+    const k = Math.min(1, (t - t0) / dur);
+    mk.setLatLng([from.lat + (to[0] - from.lat) * k, from.lng + (to[1] - from.lng) * k]);
+    movePair();
     if (k < 1) mk._glide = requestAnimationFrame(step);
   };
   mk._glide = requestAnimationFrame(step);
+}
+// La línea punteada sigue a los marcadores mientras se deslizan (sin rehacer la etiqueta)
+function movePair() {
+  if (!pairLine) return;
+  const o = otherPeople()[0], a = markers[cfg.uid], b = o && markers[o.id];
+  if (!a || !b) return;
+  const p = a.getLatLng(), q = b.getLatLng();
+  pairLine.setLatLngs([p, q]); pairLabel.setLatLng([(p.lat + q.lat) / 2, (p.lng + q.lng) / 2]);
 }
 let pendingFit = false;
 function fitAll() {
@@ -454,11 +482,14 @@ function updatePair() {
   const d = dist(me, o);
   if (d < 50) return clearPair();
   const a = [me.lat, me.lng], b = [o.lat, o.lng], mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-  const icon = L.divIcon({ className: '', iconSize: [0, 0], html: `<div class="dist">📏 ${fmtDist(d)}</div>` });
+  const txt = `📏 ${fmtDist(d)}`;
+  const icon = () => L.divIcon({ className: '', iconSize: [0, 0], html: `<div class="dist">${txt}</div>` });
   if (!pairLine) {
     pairLine = L.polyline([a, b], { color: '#f43f5e', weight: 4, dashArray: '8 10', opacity: 0.9 }).addTo(map);
-    pairLabel = L.marker(mid, { icon, interactive: false, zIndexOffset: 900 }).addTo(map);
-  } else { pairLine.setLatLngs([a, b]); pairLabel.setLatLng(mid).setIcon(icon); }
+    pairLabel = L.marker(mid, { icon: icon(), interactive: false, zIndexOffset: 900 }).addTo(map);
+    pairLabel._txt = txt;
+  } else if (pairLabel._txt !== txt) { pairLabel.setIcon(icon()); pairLabel._txt = txt; }
+  movePair(); // la línea va donde están dibujados los marcadores (pueden ir deslizándose)
 }
 
 // ---------- Interfaz ----------
@@ -672,7 +703,7 @@ async function startNativeTrack() {
     nativeTrack = true;
     if (mKey) Native.setMapboxKey({ key: mKey }).catch(logErr('clave Mapbox'));
     clearInterval(uiPollTimer);
-    uiPollTimer = setInterval(pollNative, 2000); pollNative();
+    uiPollTimer = setInterval(pollNative, 1000); pollNative();
     return true;
   } catch { return false; } // si el celular aun no tiene el modulo nuevo, usa el metodo de antes
 }
@@ -889,6 +920,19 @@ function updateStatus() {
 }
 
 // ---------- Pareja en vivo ----------
+// "Estoy mirando el mapa": mientras la app está abierta se avisa cada 45 s (watchTs). El celular de
+// tu pareja lo ve y manda su ubicación más seguido (cada ~1 s al moverse); al cerrar la app vuelve
+// al ritmo normal para cuidar la batería. Ver TrackService.setLive.
+let watchTimer = 0;
+function startWatching() {
+  const beat = () => { if (document.visibilityState === 'visible') saveMe({ watchTs: Date.now() }); };
+  document.addEventListener('visibilitychange', () => {
+    clearInterval(watchTimer);
+    if (document.visibilityState === 'visible') { beat(); watchTimer = setInterval(beat, 45000); }
+    else saveMe({ watchTs: 0 });
+  });
+  beat(); watchTimer = setInterval(beat, 45000);
+}
 function listenPeople() {
   onSnapshot(collection(db, 'rooms', cfg.room, 'users'), (snap) => {
     snap.forEach((d) => {
