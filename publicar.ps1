@@ -1,8 +1,41 @@
-﻿# Compila una versión nueva y la sube a GitHub Releases
+﻿# Compila una versión nueva, la sube a GitHub Releases y actualiza el Worker de Cloudflare
 # Ejecutar:  powershell -ExecutionPolicy Bypass -File .\publicar.ps1
+# Solo el Worker (sin compilar APK):  powershell -ExecutionPolicy Bypass -File .\publicar.ps1 -SoloWorker
+param([switch]$SoloWorker)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $utf8 = New-Object System.Text.UTF8Encoding($false)
+
+# Sube worker\push-worker.js a Cloudflare con Wrangler, solo si cambió desde la última vez.
+# La primera vez se abre el navegador para iniciar sesión en Cloudflare (una sola vez).
+function Publicar-Worker {
+  $dir = Join-Path $PSScriptRoot 'worker'
+  $marca = Join-Path $dir '.ultimo-deploy'
+  $hash = (Get-FileHash (Join-Path $dir 'push-worker.js') -Algorithm SHA256).Hash + `
+          (Get-FileHash (Join-Path $dir 'wrangler.toml') -Algorithm SHA256).Hash
+  if ((Test-Path $marca) -and ((Get-Content $marca -Raw).Trim() -eq $hash)) {
+    Write-Host 'El Worker no cambió, no hace falta subirlo.' -ForegroundColor DarkGray
+    return
+  }
+  Write-Host '=== Actualizando el Worker en Cloudflare ===' -ForegroundColor Cyan
+  Push-Location $dir
+  try {
+    npx --yes wrangler@4 deploy
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host 'Parece que falta iniciar sesión en Cloudflare. Se abre el navegador...' -ForegroundColor Yellow
+      npx --yes wrangler@4 login
+      npx --yes wrangler@4 deploy
+    }
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning 'No se pudo subir el Worker. El APK ya está publicado; revisá el error de arriba y volvé a correr: .\publicar.ps1 -SoloWorker'
+      return
+    }
+    [System.IO.File]::WriteAllText($marca, $hash, $utf8)
+    Write-Host 'Worker actualizado en Cloudflare.' -ForegroundColor Green
+  } finally { Pop-Location }
+}
+
+if ($SoloWorker) { Publicar-Worker; return }
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
   throw 'Falta GitHub CLI. Ejecuta: winget install --id GitHub.cli y luego: gh auth login'
@@ -40,3 +73,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Nderakore, falló la subida a GitHub. Revisá 
 
 Write-Host ''
 Write-Host "¡Coronaste! Publicada la versión v$name en GitHub." -ForegroundColor Green
+
+# 4) Actualizar el Worker de Cloudflare (notificaciones push)
+Publicar-Worker
