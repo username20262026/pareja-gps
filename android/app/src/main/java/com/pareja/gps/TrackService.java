@@ -123,6 +123,10 @@ public class TrackService extends Service {
                 @Override
                 public void run() {
                     flush();
+                    try {
+                        sendPlaceEvents();
+                    } catch (Exception ignored) {
+                    }
                     tick++;
                     if (tick % 3 == 0) {
                         try {
@@ -272,6 +276,10 @@ public class TrackService extends Service {
             @Override
             public void run() {
                 if (acc > 100) return; // lectura muy imprecisa
+                try {
+                    checkMyPlace(lat, lng, ts);
+                } catch (Exception ignored) {
+                }
                 if (haveKept) {
                     long dt = ts - keptTs;
                     float[] r = new float[1];
@@ -384,6 +392,7 @@ public class TrackService extends Service {
                 uf.put("lng", dbl(last.getDouble("lng")));
                 uf.put("acc", lng(last.getLong("acc")));
                 uf.put("ts", lng(last.getLong("ts")));
+                uf.put("plv", lng(PLACE_EV_VERSION)); // "yo aviso mis llegadas/salidas" (ver checkMyPlace)
                 JSONArray mask = new JSONArray();
                 mask.put("uid");
                 mask.put("name");
@@ -392,6 +401,7 @@ public class TrackService extends Service {
                 mask.put("lng");
                 mask.put("acc");
                 mask.put("ts");
+                mask.put("plv");
                 JSONObject uu = new JSONObject();
                 uu.put("name", userDoc);
                 uu.put("fields", uf);
@@ -655,6 +665,8 @@ public class TrackService extends Service {
         double pLng = 0;
         long pTs = 0L;
         boolean pHasLoc = false;
+        long pPlv = 0L;
+        JSONObject pPlaceEv = null;
         for (int i = 0; i < docs.length(); i++) {
             JSONObject doc = docs.getJSONObject(i);
             String nm = doc.optString("name", "");
@@ -673,12 +685,21 @@ public class TrackService extends Service {
             pLat = numD(f, "lat");
             pLng = numD(f, "lng");
             pTs = numL(f, "ts");
+            pPlv = numL(f, "plv");
+            JSONObject pe = f.optJSONObject("placeEv");
+            pPlaceEv = pe == null || pe.optJSONObject("mapValue") == null ? null
+                : pe.getJSONObject("mapValue").optJSONObject("fields");
         }
         if (pUid.length() == 0) return;
         if (name.length() == 0) name = "Tu amor";
 
         // llegadas y salidas de los Lugares (en silencio si recien se pone al dia)
-        if (pHasLoc && pTs > 0) {
+        boolean resync = !sp.getBoolean("nReady", false) || !synced;
+        if (pPlv >= PLACE_EV_VERSION) {
+            // APK nuevo en el otro celular: el mismo avisa sus llegadas/salidas (push + placeEv).
+            // Aqui solo se usa placeEv como respaldo por si el push no llego.
+            if (pPlaceEv != null) partnerPlaceEv(sp, name, avatar, pPlaceEv, resync);
+        } else if (pHasLoc && pTs > 0) {
             try {
                 checkPlaces(sp, tok, base, name, avatar, pLat, pLng, pTs, !sp.getBoolean("nReady", false) || !synced);
             } catch (Exception ignored) {
@@ -781,36 +802,8 @@ public class TrackService extends Service {
     /** Siempre desde el hilo "io". */
     private void checkPlaces(SharedPreferences sp, String tok, String base, String name, String avatar,
                              double lat, double lng, long ts, boolean silent) throws Exception {
-        boolean changed = false;
+        boolean changed = refreshPlaces(sp, tok, base);
         long now = System.currentTimeMillis();
-        if (placesCache == null || now - placesTs > PLACES_REFRESH_MS) {
-            StringBuilder out = new StringBuilder();
-            int code = httpGet(base + "/places?pageSize=100", tok, out);
-            if (code == 200) {
-                JSONArray docs = new JSONObject(out.toString()).optJSONArray("documents");
-                JSONArray list = new JSONArray();
-                if (docs != null) {
-                    for (int i = 0; i < docs.length(); i++) {
-                        JSONObject d = docs.getJSONObject(i);
-                        JSONObject f = d.optJSONObject("fields");
-                        if (f == null || !f.has("lat") || !f.has("lng")) continue;
-                        String n = d.optString("name", "");
-                        JSONObject p = new JSONObject();
-                        p.put("id", n.substring(n.lastIndexOf('/') + 1));
-                        p.put("name", strF(f, "name"));
-                        p.put("emoji", strF(f, "emoji"));
-                        p.put("lat", numD(f, "lat"));
-                        p.put("lng", numD(f, "lng"));
-                        list.put(p);
-                    }
-                }
-                changed = placesCache == null || !placesCache.toString().equals(list.toString());
-                placesCache = list;
-                placesTs = now;
-            } else if (code == 401 || code == 403) {
-                idToken = null;
-            }
-        }
         if (placesCache == null) return;
         if (!silent && !changed && ts == sp.getLong("plTs", 0L)) return; // misma posicion de antes
 
@@ -830,7 +823,7 @@ public class TrackService extends Service {
                 out = r[0] > PLACE_OUT;
             }
             if (out) {
-                if (cur != null && !quiet) notifyUser(4805, who, "sali\u00f3 de " + cur.optString("emoji") + " " + cur.optString("name"));
+                if (cur != null && !quiet) notifyUser(ParejaAvisos.ID_PLACE, who, ParejaAvisos.placeText("out", cur.optString("emoji"), cur.optString("name"), 0L));
                 in = "";
             }
         }
@@ -847,12 +840,245 @@ public class TrackService extends Service {
             }
             if (best != null) {
                 in = best.optString("id");
-                if (!quiet) notifyUser(4805, who, "lleg\u00f3 a " + best.optString("emoji") + " " + best.optString("name"));
+                if (!quiet) notifyUser(ParejaAvisos.ID_PLACE, who, ParejaAvisos.placeText("in", best.optString("emoji"), best.optString("name"), 0L));
             }
         }
         e.putString("plIn", in);
         e.putLong("plTs", ts);
         e.apply();
+    }
+
+    /**
+     * Lista de Lugares (rooms/<sala>/places), guardada en memoria y en el celular para poder
+     * revisar llegadas/salidas aunque no haya internet. Se pide de nuevo cada 5 min.
+     * Devuelve true si la lista cambio (lugar nuevo o borrado): ese momento se pone al dia sin avisar.
+     * Siempre desde el hilo "io".
+     */
+    private boolean refreshPlaces(SharedPreferences sp, String tok, String base) throws Exception {
+        long now = System.currentTimeMillis();
+        if (placesCache == null) {
+            try {
+                String saved = sp.getString("plCache", "");
+                if (saved.length() > 0) placesCache = new JSONArray(saved);
+            } catch (Exception ignored) {
+            }
+        }
+        if (placesCache != null && now - placesTs <= PLACES_REFRESH_MS) return false;
+        if (tok == null) tok = token(sp);
+        if (tok == null) return false;
+        if (base == null) {
+            String pid = sp.getString("projectId", "");
+            String room = sp.getString("room", "");
+            if (pid.length() == 0 || room.length() == 0) return false;
+            base = "https://firestore.googleapis.com/v1/projects/" + pid + "/databases/(default)/documents/rooms/" + room;
+        }
+        StringBuilder out = new StringBuilder();
+        int code = httpGet(base + "/places?pageSize=100", tok, out);
+        if (code != 200) {
+            if (code == 401 || code == 403) idToken = null;
+            placesTs = now - PLACES_REFRESH_MS + 60000L; // reintenta en 1 min
+            return false;
+        }
+        JSONArray docs = new JSONObject(out.toString()).optJSONArray("documents");
+        JSONArray list = new JSONArray();
+        if (docs != null) {
+            for (int i = 0; i < docs.length(); i++) {
+                JSONObject d = docs.getJSONObject(i);
+                JSONObject f = d.optJSONObject("fields");
+                if (f == null || !f.has("lat") || !f.has("lng")) continue;
+                String n = d.optString("name", "");
+                JSONObject p = new JSONObject();
+                p.put("id", n.substring(n.lastIndexOf('/') + 1));
+                p.put("name", strF(f, "name"));
+                p.put("emoji", strF(f, "emoji"));
+                p.put("lat", numD(f, "lat"));
+                p.put("lng", numD(f, "lng"));
+                list.put(p);
+            }
+        }
+        boolean changed = placesCache == null || !placesCache.toString().equals(list.toString());
+        placesCache = list;
+        placesTs = now;
+        if (changed) sp.edit().putString("plCache", list.toString()).apply();
+        return changed;
+    }
+
+    private JSONObject findPlace(String id) throws Exception {
+        if (placesCache == null) return null;
+        for (int i = 0; i < placesCache.length(); i++) {
+            if (id.equals(placesCache.getJSONObject(i).optString("id"))) return placesCache.getJSONObject(i);
+        }
+        return null;
+    }
+
+    // ---------- Mis llegadas / salidas (las detecta el celular que se mueve) ----------
+    // Antes solo las buscaba el celular de la pareja, preguntando cada 10 s a Firestore. Con la
+    // pantalla apagada Android duerme ese reloj y corta internet, asi que muchos avisos no salian.
+    // Ahora este celular, que tiene su propio GPS al instante, detecta el cambio y:
+    //   1) lo guarda en rooms/<sala>/users/<uid>.placeEv (respaldo que la pareja revisa), y
+    //   2) manda un push de prioridad alta por el Worker, que despierta al otro celular aunque duerma.
+    // Si no hay internet queda en cola (plEvQ) y se reintenta hasta 30 min.
+    static final long PLACE_EV_VERSION = 2L;
+    static final long PLACE_EV_MAX_AGE = 30L * 60L * 1000L;
+    private static final String PUSH_URL = "https://push.nnxsw-proyect.date/notify";
+
+    /** Siempre desde el hilo "io". Se llama con cada lectura del GPS de precision aceptable. */
+    private void checkMyPlace(double lat, double lng, long ts) throws Exception {
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean changed = refreshPlaces(sp, null, null);
+        if (placesCache == null) return;
+        // primera vez (APK recien instalado): solo aprende donde esta, sin avisar
+        boolean silent = changed || !sp.contains("myIn");
+        String in = sp.getString("myIn", "");
+        int outN = sp.getInt("myOutN", 0);
+        float[] r = new float[1];
+        if (in.length() > 0) {
+            JSONObject cur = findPlace(in);
+            if (cur == null) {
+                in = ""; // borraron el lugar
+                outN = 0;
+            } else {
+                Location.distanceBetween(lat, lng, cur.getDouble("lat"), cur.getDouble("lng"), r);
+                if (r[0] > PLACE_OUT) {
+                    outN++;
+                    // dos lecturas seguidas afuera (o una muy lejos): un salto suelto del GPS no cuenta
+                    if (silent || outN >= 2 || r[0] > PLACE_OUT * 2) {
+                        if (!silent) queuePlaceEv(sp, "out", cur, ts);
+                        in = "";
+                        outN = 0;
+                    }
+                } else {
+                    outN = 0;
+                }
+            }
+        }
+        if (in.length() == 0) {
+            JSONObject best = null;
+            float bd = PLACE_IN;
+            for (int i = 0; i < placesCache.length(); i++) {
+                JSONObject p = placesCache.getJSONObject(i);
+                Location.distanceBetween(lat, lng, p.getDouble("lat"), p.getDouble("lng"), r);
+                if (r[0] < bd) {
+                    bd = r[0];
+                    best = p;
+                }
+            }
+            if (best != null) {
+                in = best.optString("id");
+                outN = 0;
+                if (!silent) queuePlaceEv(sp, "in", best, ts);
+            }
+        }
+        if (!in.equals(sp.getString("myIn", null)) || outN != sp.getInt("myOutN", 0)) {
+            sp.edit().putString("myIn", in).putInt("myOutN", outN).apply();
+        }
+    }
+
+    private void queuePlaceEv(SharedPreferences sp, String kind, JSONObject place, long ts) throws Exception {
+        JSONArray q;
+        try {
+            q = new JSONArray(sp.getString("plEvQ", "[]"));
+        } catch (Exception e) {
+            q = new JSONArray();
+        }
+        JSONObject ev = new JSONObject();
+        ev.put("kind", kind);
+        ev.put("id", place.optString("id"));
+        ev.put("name", place.optString("name"));
+        ev.put("emoji", place.optString("emoji"));
+        ev.put("ts", ts);
+        ev.put("fs", false);
+        ev.put("push", false);
+        q.put(ev);
+        JSONArray keep = new JSONArray();
+        for (int i = Math.max(0, q.length() - 6); i < q.length(); i++) keep.put(q.get(i));
+        sp.edit().putString("plEvQ", keep.toString()).apply();
+        sendPlaceEvents();
+    }
+
+    /** Siempre desde el hilo "io". Sube a Firestore y manda por push los avisos pendientes. */
+    private void sendPlaceEvents() throws Exception {
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String raw = sp.getString("plEvQ", "[]");
+        if (raw.length() <= 2) return;
+        JSONArray q = new JSONArray(raw);
+        String pid = sp.getString("projectId", "");
+        String room = sp.getString("room", "");
+        String uid = sp.getString("uid", "");
+        if (pid.length() == 0 || room.length() == 0 || uid.length() == 0) return;
+        String tok = token(sp);
+        if (tok == null) return;
+        long now = System.currentTimeMillis();
+        String name = sp.getString("name", "");
+        String avatar = sp.getString("avatar", "");
+        String userDoc = "projects/" + pid + "/databases/(default)/documents/rooms/" + room + "/users/" + uid;
+        JSONArray keep = new JSONArray();
+        for (int i = 0; i < q.length(); i++) {
+            JSONObject ev = q.getJSONObject(i);
+            long ts = ev.optLong("ts", 0L);
+            if (now - ts > PLACE_EV_MAX_AGE) continue; // ya es tarde para avisar
+            try {
+                if (!ev.optBoolean("fs")) {
+                    JSONObject pf = new JSONObject();
+                    pf.put("kind", str(ev.optString("kind")));
+                    pf.put("id", str(ev.optString("id")));
+                    pf.put("name", str(ev.optString("name")));
+                    pf.put("emoji", str(ev.optString("emoji")));
+                    pf.put("ts", lng(ts));
+                    JSONObject fields = new JSONObject();
+                    fields.put("placeEv", new JSONObject().put("mapValue", new JSONObject().put("fields", pf)));
+                    JSONObject upd = new JSONObject();
+                    upd.put("name", userDoc);
+                    upd.put("fields", fields);
+                    JSONObject w = new JSONObject();
+                    w.put("update", upd);
+                    w.put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("placeEv")));
+                    JSONObject body = new JSONObject().put("writes", new JSONArray().put(w));
+                    int code = post("https://firestore.googleapis.com/v1/projects/" + pid + "/databases/(default)/documents:commit",
+                        body.toString(), "application/json", tok, new StringBuilder());
+                    if (code == 200) ev.put("fs", true);
+                    else if (code == 401 || code == 403) idToken = null;
+                }
+                if (!ev.optBoolean("push")) {
+                    JSONObject p = new JSONObject();
+                    p.put("room", room);
+                    p.put("type", "place");
+                    p.put("name", name);
+                    p.put("avatar", avatar);
+                    p.put("kind", ev.optString("kind"));
+                    p.put("body", ParejaAvisos.placeText(ev.optString("kind"), ev.optString("emoji"), ev.optString("name"), 0L));
+                    p.put("ts", ts);
+                    int code = post(PUSH_URL, p.toString(), "application/json", tok, new StringBuilder());
+                    // 4xx: el Worker no acepta el aviso (p. ej. todavia no se actualizo): no insiste,
+                    // la pareja igual lo ve por placeEv. 5xx o sin internet: se reintenta.
+                    if (code < 500) ev.put("push", true);
+                    if (code == 401) idToken = null;
+                }
+            } catch (Exception ignored) {
+                // sin internet: se reintenta en el proximo ciclo
+            }
+            if (!ev.optBoolean("fs") || !ev.optBoolean("push")) keep.put(ev);
+        }
+        sp.edit().putString("plEvQ", keep.toString()).apply();
+    }
+
+    /**
+     * Respaldo del push: la ultima llegada/salida que la pareja guardo en placeEv.
+     * A diferencia de antes, si el servicio estuvo dormido o se reinicio igual avisa
+     * (hasta 30 min tarde, diciendo "hace N min"); solo calla lo que ya se vio con la app abierta.
+     */
+    private void partnerPlaceEv(SharedPreferences sp, String name, String avatar, JSONObject pe, boolean resync) {
+        long evTs = numL(pe, "ts");
+        if (evTs <= sp.getLong("nPlace", 0L)) return; // ya avisado (por push o por aqui)
+        boolean show = sp.getBoolean("nReady", false) && sp.getBoolean("plAlerts", true)
+            && System.currentTimeMillis() - evTs < PLACE_EV_MAX_AGE;
+        // al volver de tener la app abierta: lo que paso mientras estaba abierta ya se vio en pantalla
+        if (show && resync && evTs <= sp.getLong("pausedAt", 0L)) show = false;
+        if (show) {
+            String who = (avatar.length() > 0 ? avatar + " " : "") + name;
+            notifyUser(ParejaAvisos.ID_PLACE, who, ParejaAvisos.placeText(strF(pe, "kind"), strF(pe, "emoji"), strF(pe, "name"), evTs));
+        }
+        sp.edit().putLong("nPlace", evTs).apply();
     }
 
     /** Siempre desde el hilo "io". Avisa de una llamada entrante aunque la app este cerrada. */

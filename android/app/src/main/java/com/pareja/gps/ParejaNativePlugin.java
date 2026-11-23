@@ -436,6 +436,9 @@ public class ParejaNativePlugin extends Plugin {
     @Override
     protected void handleOnPause() {
         TrackService.appVisible = false;
+        // hasta aqui la persona vio los avisos en pantalla (TrackService no los repite)
+        getContext().getSharedPreferences(TrackService.PREFS, Context.MODE_PRIVATE).edit()
+                .putLong("pausedAt", System.currentTimeMillis()).apply();
     }
 
     // Al tocar la notificacion "Nueva version" con la app ya abierta en segundo plano
