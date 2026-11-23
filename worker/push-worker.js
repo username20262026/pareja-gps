@@ -4,7 +4,8 @@
 // un corazón, un estado, una notita 💌 o empieza / corta una llamada.
 //
 //   Cabecera:  Authorization: Bearer <ID token de Firebase de quien envía>
-//   Cuerpo:    { room, type: 'chat'|'heart'|'mood'|'msg'|'call'|'call_end', name, avatar, body, ts, callId }
+//   Cuerpo:    { room, type: 'chat'|'heart'|'mood'|'msg'|'call'|'call_end'|'place', name, avatar, body, ts, callId, kind }
+//   ('place' = llegó / salió de un Lugar; lo manda el servicio de ubicación del celular que se mueve)
 //
 // El Worker:
 //   1. comprueba el ID token (que sea una cuenta real de tu proyecto Firebase),
@@ -19,9 +20,9 @@
 //                       "Generar nueva clave privada").
 // No necesita ninguna librería: se pega este archivo tal cual en el editor del Worker.
 
-const TYPES = new Set(['chat', 'heart', 'mood', 'msg', 'call', 'call_end']);
+const TYPES = new Set(['chat', 'heart', 'mood', 'msg', 'call', 'call_end', 'place']);
 // Cuánto tiempo guarda FCM el aviso si el celular está apagado o sin internet (segundos)
-const TTL = { chat: 86400, msg: 86400, heart: 21600, mood: 21600, call: 60, call_end: 60 };
+const TTL = { chat: 86400, msg: 86400, heart: 21600, mood: 21600, call: 60, call_end: 60, place: 1800 };
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -65,7 +66,8 @@ export default {
         avatar: short(p.avatar, 8),
         body: short(p.body, 180),
         ts: String(Number(p.ts) || Date.now()),
-        callId: short(p.callId, 60)
+        callId: short(p.callId, 60),
+        kind: p.kind === 'out' ? 'out' : (p.kind === 'in' ? 'in' : '')
       };
 
       let sent = 0;

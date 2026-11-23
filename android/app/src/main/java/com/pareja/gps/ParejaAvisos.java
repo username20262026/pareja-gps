@@ -18,6 +18,7 @@ final class ParejaAvisos {
     static final int ID_MOOD = 4802;
     static final int ID_MSG = 4803;
     static final int ID_CHAT = 4804;
+    static final int ID_PLACE = 4805;
     static final int ID_CALL = 4950;
 
     private ParejaAvisos() { }
@@ -50,6 +51,16 @@ final class ParejaAvisos {
         b.setWhen(System.currentTimeMillis());
         b.setShowWhen(true);
         nm.notify(id, b.build());
+    }
+
+    /** "llegó a 🏠 Casa" / "salió de 🏠 Casa"; si el aviso llega tarde agrega "· hace N min". */
+    static String placeText(String kind, String emoji, String name, long ts) {
+        String t = ("out".equals(kind) ? "sali\u00f3 de " : "lleg\u00f3 a ") + (emoji == null || emoji.length() == 0 ? "" : emoji + " ") + name;
+        if (ts > 0) {
+            long min = (System.currentTimeMillis() - ts) / 60000L;
+            if (min >= 3) t += " \u00b7 hace " + min + " min";
+        }
+        return t;
     }
 
     static void notifyCall(Context c, String who) {

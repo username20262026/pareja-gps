@@ -906,7 +906,8 @@ function listenPeople() {
         };
         if (data.moodTs && data.mood) react('seenMood_', data.moodTs, `${data.avatar || '💗'} ${data.name}: ${data.mood}`);
         if (data.msgTs && data.msg) react('seenMsg_', data.msgTs, `💌 ${data.name}: “${data.msg}”`);
-        checkPlaceAlerts(false, d.id);
+        if ((data.plv || 0) >= 2) placeEvToast(d.id, data); // APK nuevo: avisa el propio celular de tu pareja
+        else checkPlaceAlerts(false, d.id); // APK viejo: se calcula aquí con su posición
       }
       if (d.id !== cfg.uid && data.heartTs) {
         const k = 'seenHeart_' + d.id;
@@ -2034,7 +2035,7 @@ const placeState = {}; // uid -> { in: id del lugar o '', ts: última posición 
 function checkPlaceAlerts(silent, onlyId) {
   if (!cfg) return;
   Object.entries(people).forEach(([id, p]) => {
-    if (id === cfg.uid || (onlyId && id !== onlyId) || p.lat == null || !p.ts) return;
+    if (id === cfg.uid || (onlyId && id !== onlyId) || p.lat == null || !p.ts || (p.plv || 0) >= 2) return;
     const st = placeState[id] || (placeState[id] = { in: '', ts: 0, ready: false });
     if (!silent && p.ts === st.ts) return; // misma posición de antes
     st.ts = p.ts;
@@ -2055,6 +2056,19 @@ function checkPlaceAlerts(silent, onlyId) {
       }
     }
   });
+}
+
+// Desde el APK nuevo cada celular detecta SUS llegadas/salidas con su propio GPS, las guarda en
+// users/<uid>.placeEv y manda un push. Con la app abierta se muestran aquí (y el push no se repite).
+function placeEvToast(id, p) {
+  const ev = p.placeEv;
+  if (!ev || !ev.ts) return;
+  const k = 'seenPlace_' + id;
+  if (ev.ts <= Number(localStorage.getItem(k) || 0)) return;
+  localStorage.setItem(k, ev.ts);
+  if (!placeAlerts || Date.now() - ev.ts > PLACE_STALE) return;
+  toast(`${p.avatar || '💗'} ${p.name || 'Tu amor'} ${ev.kind === 'out' ? 'salió de' : 'llegó a'} ${ev.emoji || ''} ${ev.name}`);
+  navigator.vibrate?.(60);
 }
 
 // ---------- Historial ----------

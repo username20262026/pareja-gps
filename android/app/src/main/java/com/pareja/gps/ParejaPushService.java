@@ -10,7 +10,8 @@ import java.util.Map;
 
 /**
  * Recibe las notificaciones push (Firebase Cloud Messaging) que manda la Cloud Function
- * "functions/index.js" cuando la pareja escribe, manda un corazon o llama.
+ * el Worker de Cloudflare (worker/push-worker.js) cuando la pareja escribe, manda un corazon,
+ * llama o llega / sale de un Lugar.
  * Llegan aunque la app y el servicio de ubicacion esten cerrados.
  *
  * Usa los mismos marcadores que TrackService (nHeart, nChat, lastCallId...) para que
@@ -72,6 +73,20 @@ public class ParejaPushService extends FirebaseMessagingService {
                 String title = count > 1 ? name + " · " + count + " mensajes" : name;
                 ParejaAvisos.notifyUser(this, ParejaAvisos.ID_CHAT, title, get(d, "body"));
                 e.putLong("nChat", ts).putInt("pChatCount", count);
+                break;
+            }
+            case "place": {
+                // Llegada / salida de un Lugar: la manda el celular de la pareja apenas su GPS lo detecta
+                if (ts <= 0 || ts <= sp.getLong("nPlace", 0L)) return;
+                e.putLong("nPlace", ts);
+                if (sp.getBoolean("plAlerts", true) && System.currentTimeMillis() - ts < TrackService.PLACE_EV_MAX_AGE) {
+                    String who = (avatar.length() > 0 ? avatar + " " : "") + name;
+                    String body = get(d, "body");
+                    if (ts > 0 && System.currentTimeMillis() - ts >= 3L * 60000L) {
+                        body += " \u00b7 hace " + ((System.currentTimeMillis() - ts) / 60000L) + " min";
+                    }
+                    ParejaAvisos.notifyUser(this, ParejaAvisos.ID_PLACE, who, body);
+                }
                 break;
             }
             case "call": {
