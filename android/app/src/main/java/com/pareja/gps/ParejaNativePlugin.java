@@ -573,6 +573,33 @@ public class ParejaNativePlugin extends Plugin {
         }).start();
     }
 
+    // ---------- Cámara nativa del chat (ParejaCamActivity) ----------
+    // Devuelve { action: "photo", path } con la foto, { action: "gallery" } si tocó la galería o { action: "cancel" }
+    private PluginCall camCall;
+
+    @PluginMethod
+    public void camera(final PluginCall call) {
+        if (camCall != null) camCall.resolve(new JSObject().put("action", "cancel"));
+        camCall = call;
+        ParejaCamActivity.listener = (action, path, error) -> {
+            PluginCall c = camCall;
+            camCall = null;
+            if (c == null) return;
+            if ("error".equals(action)) { c.reject(error == null ? "No se pudo abrir la cámara" : error); return; }
+            JSObject r = new JSObject();
+            r.put("action", action);
+            if (path != null) r.put("path", path);
+            c.resolve(r);
+        };
+        try {
+            getActivity().startActivity(new Intent(getContext(), ParejaCamActivity.class));
+        } catch (Exception e) {
+            ParejaCamActivity.listener = null;
+            camCall = null;
+            call.reject(String.valueOf(e.getMessage()));
+        }
+    }
+
     // ---------- Grabación de audio nativa (no depende del WebView) ----------
     private android.media.MediaRecorder recorder;
     private File recFile;
